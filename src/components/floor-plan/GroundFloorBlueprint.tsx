@@ -6,6 +6,7 @@
 import { memo } from "react";
 import { FloorBlueprint } from "./FloorBlueprint";
 import type { PersonOnMap, RoomDensity, MapZoneData } from "./FloorBlueprint";
+import { FLOOR_MAP_PNG, getFloorPlanPixels } from "@/data/floorPlanDimensions";
 
 export type { PersonOnMap, RoomDensity, MapZoneData };
 
@@ -25,7 +26,15 @@ interface GroundFloorBlueprintProps {
 }
 
 function GroundFloorBlueprintInner(props: GroundFloorBlueprintProps) {
-  return <FloorBlueprint floorPlanImage="/GroundFloor.png" {...props} />;
+  const { w, h } = getFloorPlanPixels("ground");
+  return (
+    <FloorBlueprint
+      planWidth={w}
+      planHeight={h}
+      floorPlanImage={FLOOR_MAP_PNG.ground}
+      {...props}
+    />
+  );
 }
 
 export const GroundFloorBlueprint = memo(GroundFloorBlueprintInner);

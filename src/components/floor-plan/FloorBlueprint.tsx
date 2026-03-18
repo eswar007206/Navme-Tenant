@@ -4,18 +4,8 @@
  * Click a zone to block (red) / unblock (green).
  */
 
-import { useMemo, memo, useState, useCallback } from "react";
-import { arToImage } from "@/lib/mapCoordinates";
-import {
-  FLOOR_IMG_WIDTH,
-  FLOOR_IMG_HEIGHT,
-  FLOOR_CROP_Y,
-  FLOOR_CROP_W,
-  FLOOR_CROP_H,
-} from "@/lib/mapCoordinates";
-
-const IMG_WIDTH = FLOOR_IMG_WIDTH;
-const IMG_HEIGHT = FLOOR_IMG_HEIGHT;
+import { useMemo, memo, useState, useCallback, useRef } from "react";
+import { arToImageOnPlan } from "@/lib/mapCoordinates";
 
 export interface PersonOnMap {
   id: string;
@@ -38,9 +28,16 @@ export interface MapZoneData {
   h: number;
 }
 
+export interface NavPathPoint {
+  x: number;
+  y: number;
+}
+
 interface FloorBlueprintProps {
+  /** Rasterized plan size (must match floorPlanImage pixels). */
+  planWidth: number;
+  planHeight: number;
   floorPlanImage: string;
-  /** Invert the floor plan image colors (white bg → black bg). */
   invertImage?: boolean;
   width?: number | string;
   height?: number | string;
@@ -54,9 +51,14 @@ interface FloorBlueprintProps {
   zones?: MapZoneData[];
   blockedZones?: Set<string>;
   onZoneToggle?: (zoneId: string) => void;
+  navPathPoints?: NavPathPoint[];
+  isDrawingNavPath?: boolean;
+  onNavPathClick?: (pt: NavPathPoint) => void;
 }
 
 function FloorBlueprintInner({
+  planWidth,
+  planHeight,
   floorPlanImage,
   invertImage = false,
   width = "100%",
@@ -66,23 +68,44 @@ function FloorBlueprintInner({
   zones = [],
   blockedZones = new Set(),
   onZoneToggle,
+  navPathPoints = [],
+  isDrawingNavPath = false,
+  onNavPathClick,
 }: FloorBlueprintProps) {
   const [imgError, setImgError] = useState(false);
   const [hoveredZone, setHoveredZone] = useState<string | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const handleSvgClick = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      if (!isDrawingNavPath || !onNavPathClick || !svgRef.current) return;
+      const svg = svgRef.current;
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+      const svgPt = pt.matrixTransform(ctm.inverse());
+      onNavPathClick({ x: svgPt.x, y: svgPt.y });
+    },
+    [isDrawingNavPath, onNavPathClick],
+  );
 
   const trafficPoints = useMemo(() => {
     return people.map((p) => ({
       id: p.id,
-      ...arToImage(p.x, p.y),
+      ...arToImageOnPlan(p.x, p.y, planWidth, planHeight),
       label: p.userName,
     }));
-  }, [people]);
+  }, [people, planWidth, planHeight]);
 
   const handleZoneClick = useCallback(
-    (zoneId: string) => {
+    (e: React.MouseEvent, zoneId: string) => {
+      if (isDrawingNavPath) return;
+      e.stopPropagation();
       onZoneToggle?.(zoneId);
     },
-    [onZoneToggle]
+    [onZoneToggle, isDrawingNavPath]
   );
 
   return (
@@ -96,7 +119,8 @@ function FloorBlueprintInner({
       }}
     >
       <svg
-        viewBox={`0 ${FLOOR_CROP_Y} ${FLOOR_CROP_W} ${FLOOR_CROP_H}`}
+        ref={svgRef}
+        viewBox={`0 0 ${planWidth} ${planHeight}`}
         preserveAspectRatio="xMidYMid meet"
         style={{
           position: "absolute",
@@ -104,10 +128,12 @@ function FloorBlueprintInner({
           width: "100%",
           height: "100%",
           display: "block",
+          cursor: isDrawingNavPath ? "crosshair" : undefined,
         }}
+        onClick={handleSvgClick}
       >
         {/* White background */}
-        <rect x="0" y={FLOOR_CROP_Y} width={FLOOR_CROP_W} height={FLOOR_CROP_H} fill="#fff" />
+        <rect x="0" y="0" width={planWidth} height={planHeight} fill="#fff" />
 
         {/* Embedded floor plan image */}
         {!imgError && (
@@ -115,8 +141,8 @@ function FloorBlueprintInner({
             href={floorPlanImage}
             x="0"
             y="0"
-            width={IMG_WIDTH}
-            height={IMG_HEIGHT}
+            width={planWidth}
+            height={planHeight}
             preserveAspectRatio="none"
             style={invertImage ? { filter: "invert(1)" } : undefined}
             onError={() => setImgError(true)}
@@ -144,7 +170,7 @@ function FloorBlueprintInner({
                 strokeWidth={isHovered ? 3 : 2}
                 rx={3}
                 style={{ cursor: "pointer", transition: "fill 0.15s, stroke-width 0.15s" }}
-                onClick={() => handleZoneClick(zone.zone_id)}
+                onClick={(e) => handleZoneClick(e, zone.zone_id)}
                 onMouseEnter={() => setHoveredZone(zone.zone_id)}
                 onMouseLeave={() => setHoveredZone(null)}
                 aria-label={`${zone.label} — ${isBlocked ? "Blocked" : "Unblocked"}`}
@@ -185,6 +211,31 @@ function FloorBlueprintInner({
             >
               <title>{p.label ?? p.id}</title>
             </circle>
+          ))}
+
+          {/* Navigation path */}
+          {navPathPoints.length >= 2 && (
+            <polyline
+              points={navPathPoints.map((p) => `${p.x},${p.y}`).join(" ")}
+              fill="none"
+              stroke="#2563eb"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ pointerEvents: "none" }}
+            />
+          )}
+          {navPathPoints.map((p, i) => (
+            <circle
+              key={`nav-${i}`}
+              cx={p.x}
+              cy={p.y}
+              r="5"
+              fill="#2563eb"
+              stroke="#ffffff"
+              strokeWidth="1.5"
+              style={{ pointerEvents: "none" }}
+            />
           ))}
         </g>
       </svg>

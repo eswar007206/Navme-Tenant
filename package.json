@@ -7,6 +7,8 @@
     "start": "node server.js",
     "dev": "vite",
     "build": "vite build",
+    "maps:mega": "node scripts/generate-mega-floor-svgs.mjs",
+    "maps:pdf": "node scripts/rasterize-pdf-floors.mjs",
     "export-floor-plan": "node scripts/export-floor-plan-png.cjs",
     "export-first-floor": "node scripts/export-first-floor-png.mjs",
     "extract-svg-highlights": "node scripts/extract-svg-highlights.cjs",

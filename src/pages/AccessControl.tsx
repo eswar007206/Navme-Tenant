@@ -18,9 +18,11 @@ import { supabase } from "@/lib/supabase";
 import { format } from "date-fns";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { FloorBlueprint } from "@/components/floor-plan/FloorBlueprint";
-import type { PersonOnMap } from "@/components/floor-plan/FloorBlueprint";
-import { BUILDING_OUTLINE, BUILDING_BOUNDS } from "@/data/heatmapData";
+import type { PersonOnMap, NavPathPoint } from "@/components/floor-plan/FloorBlueprint";
+import { BUILDING_OUTLINE, BUILDING_BOUNDS, getBuildingOutlineBoundingBox } from "@/data/heatmapData";
+import { FLOOR_MAP_PNG, getFloorPlanPixels } from "@/data/floorPlanDimensions";
 import { AR_BOUNDS } from "@/data/pinnacleArCoordinates";
+import { fetchFloorNavPathsRows } from "@/lib/floorNavPaths";
 
 const FloorBlueprint3D = lazy(() => import("@/components/floor-plan/FloorBlueprint3D"));
 
@@ -53,9 +55,9 @@ const TABS: { key: TabKey; label: string; icon: typeof Layers; table: string; na
   { key: "passages", label: "Passages", icon: DoorOpen, table: "ar_ropin_entries", nameField: "name_display" },
 ];
 
-const FLOOR_OPTIONS: { key: FloorKey; label: string; image: string }[] = [
-  { key: "ground", label: "Ground Floor", image: "/GroundFloor.png" },
-  { key: "first", label: "First Floor", image: "/FirstFloor.png" },
+const FLOOR_OPTIONS: { key: FloorKey; label: string }[] = [
+  { key: "ground", label: "Ground Floor" },
+  { key: "first", label: "First Floor" },
 ];
 
 const DUMMY_PEOPLE_PER_FLOOR = 50;
@@ -92,10 +94,11 @@ function arToBuildingCoords(arX: number, arZ: number): { bx: number; bz: number 
 /** Generate dummy people with positions guaranteed to be inside the building polygon. */
 function createDummyPeople(prefix: string): PersonOnMap[] {
   const people: PersonOnMap[] = [];
-  const bxMin = -4.19 + BUILDING_PADDING;
-  const bxMax = 9.41 - BUILDING_PADDING;
-  const bzMin = -11.0 + BUILDING_PADDING;
-  const bzMax = 4.48 - BUILDING_PADDING;
+  const bb = getBuildingOutlineBoundingBox(Math.max(1, BUILDING_PADDING * 2.5));
+  const bxMin = bb.xMin;
+  const bxMax = bb.xMax;
+  const bzMin = bb.zMin;
+  const bzMax = bb.zMax;
   let attempts = 0;
   while (people.length < DUMMY_PEOPLE_PER_FLOOR && attempts < 5000) {
     attempts++;
@@ -154,12 +157,36 @@ export default function AccessControl() {
 
   const currentTab = TABS.find((t) => t.key === activeTab)!;
   const currentFloor = FLOOR_OPTIONS.find((floor) => floor.key === activeFloor)!;
+  const floorImage = FLOOR_MAP_PNG[activeFloor];
+  const planDims = getFloorPlanPixels(activeFloor);
 
   const { data: items, isLoading } = useQuery({
     queryKey: ["access-control", currentTab.table],
     queryFn: () => fetchItems(currentTab.table),
     refetchInterval: 10000,
   });
+
+  const { data: navPathRows } = useQuery({
+    queryKey: ["floor-nav-paths"],
+    queryFn: fetchFloorNavPathsRows,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
+    refetchInterval: 5000,
+  });
+
+  useEffect(() => {
+    const onUpd = () => {
+      void queryClient.invalidateQueries({ queryKey: ["floor-nav-paths"], exact: true });
+    };
+    window.addEventListener("floor-nav-paths-updated", onUpd);
+    return () => window.removeEventListener("floor-nav-paths-updated", onUpd);
+  }, [queryClient]);
+
+  const navPathPoints = useMemo((): NavPathPoint[] => {
+    const row = navPathRows?.find((r) => r.floor === activeFloor);
+    return row?.points ?? [];
+  }, [navPathRows, activeFloor]);
 
   useEffect(() => {
     if (items) {
@@ -199,6 +226,7 @@ export default function AccessControl() {
   );
 
   const refetchAll = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["floor-nav-paths"], exact: true });
     queryClient.invalidateQueries({ queryKey: ["access-control", currentTab.table] });
   }, [queryClient, currentTab.table]);
 
@@ -314,25 +342,31 @@ export default function AccessControl() {
           {mapViewMode === "2d" ? (
             <FloorBlueprint
               key={`2d-${activeFloor}`}
-              floorPlanImage={currentFloor.image}
+              planWidth={planDims.w}
+              planHeight={planDims.h}
+              floorPlanImage={floorImage}
               className="w-full"
-              height={520}
+              height={720}
               people={peopleByFloor[activeFloor]}
+              navPathPoints={navPathPoints}
             />
           ) : (
             <Suspense
               fallback={
-                <div className="w-full flex items-center justify-center text-muted-foreground" style={{ height: 520 }}>
+                <div className="w-full flex items-center justify-center text-muted-foreground" style={{ height: 720 }}>
                   <Loader2 className="w-6 h-6 animate-spin mr-3" /> Loading 3D map...
                 </div>
               }
             >
               <FloorBlueprint3D
                 key={`3d-${activeFloor}`}
-                floorPlanImage={currentFloor.image}
+                planWidth={planDims.w}
+                planHeight={planDims.h}
+                floorPlanImage={floorImage}
                 className="w-full"
-                height={520}
+                height={720}
                 people={peopleByFloor[activeFloor]}
+                navPathPoints={navPathPoints}
               />
             </Suspense>
           )}

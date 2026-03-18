@@ -37,26 +37,47 @@ export interface BuildingOutlinePoint {
   z: number;
 }
 
+const S = 2.5;
 export const BUILDING_OUTLINE: BuildingOutlinePoint[] = [
-  { label: "p1", x: 9.33, z: -11.0 },
-  { label: "p2", x: 9.41, z: -6.4 },
-  { label: "p3", x: 9.41, z: -0.7 },
-  { label: "p4", x: 9.41, z: 4.52 },
-  { label: "p5", x: 5.56, z: 4.48 },
-  { label: "p6", x: 1.67, z: 4.48 },
-  { label: "p7", x: -2.5, z: 4.48 },
-  { label: "p8", x: -2.48, z: -0.69 },
-  { label: "p9", x: -2.41, z: -4.75 },
-  { label: "p10", x: -1.12, z: -11.0 },
-  { label: "p11", x: -4.19, z: -11.0 },
+  { label: "p1", x: 9.33 * S, z: -11.0 * S },
+  { label: "p2", x: 9.41 * S, z: -6.4 * S },
+  { label: "p3", x: 9.41 * S, z: -0.7 * S },
+  { label: "p4", x: 9.41 * S, z: 4.52 * S },
+  { label: "p5", x: 5.56 * S, z: 4.48 * S },
+  { label: "p6", x: 1.67 * S, z: 4.48 * S },
+  { label: "p7", x: -2.5 * S, z: 4.48 * S },
+  { label: "p8", x: -2.48 * S, z: -0.69 * S },
+  { label: "p9", x: -2.41 * S, z: -4.75 * S },
+  { label: "p10", x: -1.12 * S, z: -11.0 * S },
+  { label: "p11", x: -4.19 * S, z: -11.0 * S },
 ];
 
 export const BUILDING_BOUNDS = {
-  zMin: -13,
-  zMax: 6.5,
-  xMin: -6,
-  xMax: 11,
+  zMin: -13 * S,
+  zMax: 6.5 * S,
+  xMin: -6 * S,
+  xMax: 11 * S,
 };
+
+/** Tight bbox inside outline for spawning dummy people / sampling. */
+export function getBuildingOutlineBoundingBox(pad = 0.8) {
+  let xMin = Infinity,
+    xMax = -Infinity,
+    zMin = Infinity,
+    zMax = -Infinity;
+  for (const p of BUILDING_OUTLINE) {
+    xMin = Math.min(xMin, p.x);
+    xMax = Math.max(xMax, p.x);
+    zMin = Math.min(zMin, p.z);
+    zMax = Math.max(zMax, p.z);
+  }
+  return {
+    xMin: xMin + pad,
+    xMax: xMax - pad,
+    zMin: zMin + pad,
+    zMax: zMax - pad,
+  };
+}
 
 export function generateTicks(min: number, max: number, step: number): number[] {
   const ticks: number[] = [];

@@ -177,5 +177,5 @@ export function outlineToMapPath(): string {
 }
 
 /** Prefer SVG for full clarity when zooming (vector). Fallback to PNG. */
-export const FLOOR_PLAN_GROUND_SVG = "/GroundFloor.svg";
-export const FLOOR_PLAN_IMAGE_GROUND = "/GroundFloor.png";
+export const FLOOR_PLAN_GROUND_SVG = "/maps/mega-ground.svg";
+export const FLOOR_PLAN_IMAGE_GROUND = "/maps/mega-ground.svg";

@@ -391,25 +391,36 @@ export default function EmergencySOS() {
   const deactivateEmergency = useCallback(async () => {
     setShowDeactivateDialog(false);
 
-    // 1. Set emergency_state to inactive via RPC
-    await supabase.rpc('toggle_emergency', { activate: false, email: 'admin@pinnacle.com' });
+    try {
+      // 1. Set emergency_state to inactive via RPC
+      const { error: rpcError } = await supabase.rpc('toggle_emergency', { activate: false, email: 'admin@pinnacle.com' });
+      if (rpcError) {
+        console.error("Stand down RPC failed:", rpcError);
+        alert("Failed to stand down: " + rpcError.message);
+        return;
+      }
 
-    // 2. Unblock all fire exit zones
-    const fireZoneIds = fireExitZones.map((z) => z.zone_id);
-    if (fireZoneIds.length > 0) {
-      await supabase
-        .from("access_control_zones")
-        .update({ is_blocked: false })
-        .in("zone_id", fireZoneIds);
+      // 2. Unblock all fire exit zones
+      const fireZoneIds = fireExitZones.map((z) => z.zone_id);
+      if (fireZoneIds.length > 0) {
+        const { error: updateErr } = await supabase
+          .from("access_control_zones")
+          .update({ is_blocked: false })
+          .in("zone_id", fireZoneIds);
+        if (updateErr) console.error("Failed to unblock zones:", updateErr);
+      }
+
+      // 3. Invalidate
+      queryClient.invalidateQueries({ queryKey: EMERGENCY_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ZONES_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: CHECKINS_KEY });
+      queryClient.invalidateQueries({ queryKey: STUCK_REPORTS_KEY });
+      queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
+      queryClient.invalidateQueries({ queryKey: ["access-control-zones"] });
+    } catch (err) {
+      console.error("Stand down error:", err);
+      alert("Stand down failed. Check the console for details.");
     }
-
-    // 3. Invalidate
-    queryClient.invalidateQueries({ queryKey: EMERGENCY_QUERY_KEY });
-    queryClient.invalidateQueries({ queryKey: ZONES_QUERY_KEY });
-    queryClient.invalidateQueries({ queryKey: CHECKINS_KEY });
-    queryClient.invalidateQueries({ queryKey: STUCK_REPORTS_KEY });
-    queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
-    queryClient.invalidateQueries({ queryKey: ["access-control-zones"] });
   }, [fireExitZones, queryClient]);
 
   /* ── Hold-to-activate logic ── */

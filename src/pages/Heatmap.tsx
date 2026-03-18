@@ -16,8 +16,10 @@ import {
 import { supabase } from "@/lib/supabase";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { FloorBlueprint } from "@/components/floor-plan/FloorBlueprint";
-import type { PersonOnMap } from "@/components/floor-plan/FloorBlueprint";
-import { BUILDING_OUTLINE, BUILDING_BOUNDS } from "@/data/heatmapData";
+import type { PersonOnMap, NavPathPoint } from "@/components/floor-plan/FloorBlueprint";
+import { BUILDING_OUTLINE, BUILDING_BOUNDS, getBuildingOutlineBoundingBox } from "@/data/heatmapData";
+import { fetchFloorNavPathsRows } from "@/lib/floorNavPaths";
+import { FLOOR_MAP_PNG, getFloorPlanPixels } from "@/data/floorPlanDimensions";
 import { AR_BOUNDS } from "@/data/pinnacleArCoordinates";
 
 const FloorBlueprint3D = lazy(() => import("@/components/floor-plan/FloorBlueprint3D"));
@@ -27,12 +29,12 @@ const FloorBlueprint3D = lazy(() => import("@/components/floor-plan/FloorBluepri
 type FloorKey = "ground" | "first";
 type MapViewMode = "2d" | "3d";
 
-const DUMMY_PEOPLE_PER_FLOOR = 50;
+const DUMMY_PEOPLE_PER_FLOOR = 5;
 const BUILDING_PADDING = 0.3;
 
-const FLOORS: { key: FloorKey; label: string; image: string }[] = [
-  { key: "ground", label: "Ground Floor", image: "/GroundFloor_HD.png" },
-  { key: "first", label: "First Floor", image: "/FirstFloor_HD.png" },
+const FLOORS: { key: FloorKey; label: string }[] = [
+  { key: "ground", label: "Ground Floor" },
+  { key: "first", label: "First Floor" },
 ];
 
 /** Ray-casting point-in-polygon check against the building outline. */
@@ -66,10 +68,8 @@ function arToBuildingCoords(arX: number, arZ: number): { bx: number; bz: number 
 /** Generate dummy people with positions guaranteed to be inside the building polygon. */
 function createDummyPeople(prefix: string): PersonOnMap[] {
   const people: PersonOnMap[] = [];
-  const bxMin = -4.19 + BUILDING_PADDING;
-  const bxMax = 9.41 - BUILDING_PADDING;
-  const bzMin = -11.0 + BUILDING_PADDING;
-  const bzMax = 4.48 - BUILDING_PADDING;
+  const bb = getBuildingOutlineBoundingBox(Math.max(1, BUILDING_PADDING * 2.5));
+  const { xMin: bxMin, xMax: bxMax, zMin: bzMin, zMax: bzMax } = bb;
   let attempts = 0;
   while (people.length < DUMMY_PEOPLE_PER_FLOOR && attempts < 5000) {
     attempts++;
@@ -155,30 +155,10 @@ export default function Heatmap() {
     first: createDummyPeople("f"),
   }));
   const currentFloor = FLOORS.find((f) => f.key === activeFloor)!;
+  const floorImage = FLOOR_MAP_PNG[activeFloor];
+  const planDims = getFloorPlanPixels(activeFloor);
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setPeopleByFloor((prev) => {
-        const movePeople = (people: PersonOnMap[]) =>
-          people.map((person) => {
-            const newX = person.x + (Math.random() - 0.5) * 0.45;
-            const newY = person.y + (Math.random() - 0.5) * 0.45;
-            const { bx, bz } = arToBuildingCoords(newX, newY);
-            if (isInsideBuilding(bx, bz)) {
-              return { ...person, x: newX, y: newY };
-            }
-            return person;
-          });
-
-        return {
-          ground: movePeople(prev.ground),
-          first: movePeople(prev.first),
-        };
-      });
-    }, 1200);
-
-    return () => window.clearInterval(interval);
-  }, []);
+  /* People are stationary — no movement interval */
 
   /* ── Map zones from access_control_zones (floor-aware) ── */
   const { data: dbZones } = useQuery({
@@ -216,6 +196,28 @@ export default function Heatmap() {
     mapZones.forEach((z) => { if (z.is_blocked) set.add(z.zone_id); });
     return set;
   }, [mapZones]);
+
+  const { data: navPathRows } = useQuery({
+    queryKey: ["floor-nav-paths"],
+    queryFn: fetchFloorNavPathsRows,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
+    refetchInterval: 5000,
+  });
+
+  useEffect(() => {
+    const onUpd = () => {
+      void queryClient.invalidateQueries({ queryKey: ["floor-nav-paths"], exact: true });
+    };
+    window.addEventListener("floor-nav-paths-updated", onUpd);
+    return () => window.removeEventListener("floor-nav-paths-updated", onUpd);
+  }, [queryClient]);
+
+  const navPathPoints = useMemo((): NavPathPoint[] => {
+    const row = navPathRows?.find((r) => r.floor === activeFloor);
+    return row?.points ?? [];
+  }, [navPathRows, activeFloor]);
 
   const handleZoneToggle = useCallback(async (zoneId: string) => {
     const zone = allZones.find((z) => z.zone_id === zoneId);
@@ -290,6 +292,7 @@ export default function Heatmap() {
 
   const refetchAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
+    queryClient.invalidateQueries({ queryKey: ["floor-nav-paths"], exact: true });
     queryClient.invalidateQueries({ queryKey: ["access-control", currentTab.table] });
   }, [queryClient, currentTab.table]);
 
@@ -374,35 +377,42 @@ export default function Heatmap() {
               </span>
             </div>
           </div>
+
         </header>
 
         <div className="rounded-xl overflow-hidden border border-border/50 bg-background">
           {mapViewMode === "2d" ? (
             <FloorBlueprint
               key={`2d-${activeFloor}`}
-              floorPlanImage={currentFloor.image}
+              planWidth={planDims.w}
+              planHeight={planDims.h}
+              floorPlanImage={floorImage}
               className="w-full"
-              height={520}
+              height={820}
               people={peopleByFloor[activeFloor]}
               zones={mapZones}
               blockedZones={blockedZones}
               onZoneToggle={handleZoneToggle}
+              navPathPoints={navPathPoints}
             />
           ) : (
             <Suspense fallback={
-              <div className="w-full flex items-center justify-center text-muted-foreground" style={{ height: 520 }}>
+              <div className="w-full flex items-center justify-center text-muted-foreground" style={{ height: 820 }}>
                 <Loader2 className="w-6 h-6 animate-spin mr-3" /> Loading 3D map...
               </div>
             }>
               <FloorBlueprint3D
                 key={`3d-${activeFloor}`}
-                floorPlanImage={currentFloor.image}
+                planWidth={planDims.w}
+                planHeight={planDims.h}
+                floorPlanImage={floorImage}
                 className="w-full"
-                height={520}
+                height={820}
                 people={peopleByFloor[activeFloor]}
                 zones={mapZones}
                 blockedZones={blockedZones}
                 onZoneToggle={handleZoneToggle}
+                navPathPoints={navPathPoints}
               />
             </Suspense>
           )}
@@ -425,6 +435,9 @@ export default function Heatmap() {
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-green-500/50" aria-hidden /> Open</span>
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-red-500/50" aria-hidden /> Restricted</span>
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500" aria-hidden /> Person</span>
+            {navPathPoints.length > 0 && (
+              <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-blue-600 rounded" aria-hidden /> Line path (Zone Editor)</span>
+            )}
             <span className="font-medium text-foreground">
               {peopleByFloor[activeFloor].length} people visible
             </span>

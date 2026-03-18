@@ -1,14 +1,14 @@
 /**
- * Map coordinate conversion for ground floor plan (1584×2241 image).
- * Image is aligned to BUILDING (architectural) space so rooms match the floor plan.
- * AR coords (tracking/lifts) are mapped to building via linear calibration, then to image.
+ * Map coordinate conversion — large campus-scale floor plans (mega building footprint).
+ * Same AR ↔ building mapping; image pixels scale with FLOOR_IMG_*.
  */
 
 import { AR_BOUNDS } from "@/data/pinnacleArCoordinates";
 import { BUILDING_BOUNDS } from "@/data/heatmapData";
 
-export const FLOOR_IMG_WIDTH = 1584;
-export const FLOOR_IMG_HEIGHT = 2241;
+/** Reference size for legacy arToImage (align with office floor plan aspect). */
+export const FLOOR_IMG_WIDTH = 1024;
+export const FLOOR_IMG_HEIGHT = 682;
 
 /** Cropped viewBox — show the full image (no margins cropped). */
 export const FLOOR_CROP_Y = 0;
@@ -33,6 +33,14 @@ export function arToBuilding(arX: number, arZ: number): { x: number; z: number }
 export function arToImage(px: number, pz: number): { x: number; y: number } {
   const b = arToBuilding(px, pz);
   return buildingToImageDirect(b.x, b.z);
+}
+
+/** Same as arToImage but scaled to an arbitrary floor-plan pixel size (PDF raster size). */
+export function arToImageOnPlan(px: number, pz: number, planW: number, planH: number): { x: number; y: number } {
+  const b = arToBuilding(px, pz);
+  const x = ((b.x - BUILDING_BOUNDS.xMin) / (BUILDING_BOUNDS.xMax - BUILDING_BOUNDS.xMin)) * planW;
+  const y = ((BUILDING_BOUNDS.zMax - b.z) / (BUILDING_BOUNDS.zMax - BUILDING_BOUNDS.zMin)) * planH;
+  return { x, y };
 }
 
 /** Building (x, z) → image (x, y). Use for rooms so they match the floor plan. */

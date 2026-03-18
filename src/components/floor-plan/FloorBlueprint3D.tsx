@@ -7,16 +7,10 @@
 
 import { useMemo, useState, useRef, useCallback, useEffect, Suspense } from "react";
 import { Canvas, useLoader, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Text, RoundedBox } from "@react-three/drei";
+import { OrbitControls, Text, RoundedBox, Line } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
-import { arToImage } from "@/lib/mapCoordinates";
-import {
-  FLOOR_IMG_WIDTH,
-  FLOOR_IMG_HEIGHT,
-  FLOOR_CROP_Y,
-  FLOOR_CROP_H,
-} from "@/lib/mapCoordinates";
+import { arToImageOnPlan } from "@/lib/mapCoordinates";
 
 /* ── Re-export shared types ──────────────────────────────────────── */
 
@@ -38,6 +32,8 @@ export interface MapZoneData {
 
 interface FloorBlueprint3DProps {
   floorPlanImage: string;
+  planWidth: number;
+  planHeight: number;
   width?: number | string;
   height?: number | string;
   className?: string;
@@ -45,36 +41,44 @@ interface FloorBlueprint3DProps {
   zones?: MapZoneData[];
   blockedZones?: Set<string>;
   onZoneToggle?: (zoneId: string) => void;
+  /** Saved line path (image pixel coords), e.g. from Zone Editor */
+  navPathPoints?: { x: number; y: number }[];
 }
 
-/* ── Constants ───────────────────────────────────────────────────── */
-
-const WORLD_W = 20;
-const WORLD_D = (FLOOR_CROP_H / FLOOR_IMG_WIDTH) * WORLD_W;
-
-function imgToWorld(imgX: number, imgY: number): { wx: number; wz: number } {
+function imgToWorld(
+  imgX: number,
+  imgY: number,
+  pw: number,
+  ph: number,
+  worldW: number,
+  worldD: number,
+): { wx: number; wz: number } {
   return {
-    wx: (imgX / FLOOR_IMG_WIDTH) * WORLD_W,
-    wz: ((imgY - FLOOR_CROP_Y) / FLOOR_CROP_H) * WORLD_D,
+    wx: (imgX / pw) * worldW,
+    wz: (imgY / ph) * worldD,
   };
 }
 
 /* ── Floor plane ─────────────────────────────────────────────────── */
 
-function FloorPlane({ image }: { image: string }) {
+function FloorPlane({
+  image,
+  worldW,
+  worldD,
+}: {
+  image: string;
+  worldW: number;
+  worldD: number;
+}) {
   const texture = useLoader(THREE.TextureLoader, image);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
-
-  const yStart = FLOOR_CROP_Y / FLOOR_IMG_HEIGHT;
-  const yEnd = (FLOOR_CROP_Y + FLOOR_CROP_H) / FLOOR_IMG_HEIGHT;
-  texture.repeat.set(1, yEnd - yStart);
-  texture.offset.set(0, 1 - yEnd);
+  texture.flipY = false;
 
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[WORLD_W / 2, 0, WORLD_D / 2]} receiveShadow>
-      <planeGeometry args={[WORLD_W, WORLD_D]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[worldW / 2, 0, worldD / 2]} receiveShadow>
+      <planeGeometry args={[worldW, worldD]} />
       <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.9} metalness={0} />
     </mesh>
   );
@@ -88,12 +92,28 @@ const GREEN_HV = new THREE.Color("#4ade80");
 const RED = new THREE.Color("#ef4444");
 const RED_HV = new THREE.Color("#f87171");
 
-function ZoneBlock({ zone, isBlocked, onToggle }: { zone: MapZoneData; isBlocked: boolean; onToggle: () => void }) {
+function ZoneBlock({
+  zone,
+  isBlocked,
+  onToggle,
+  pw,
+  ph,
+  worldW,
+  worldD,
+}: {
+  zone: MapZoneData;
+  isBlocked: boolean;
+  onToggle: () => void;
+  pw: number;
+  ph: number;
+  worldW: number;
+  worldD: number;
+}) {
   const ref = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
-  const { wx, wz } = imgToWorld(zone.x, zone.y);
-  const w3 = (zone.w / FLOOR_IMG_WIDTH) * WORLD_W;
-  const d3 = (zone.h / FLOOR_CROP_H) * WORLD_D;
+  const { wx, wz } = imgToWorld(zone.x, zone.y, pw, ph, worldW, worldD);
+  const w3 = (zone.w / pw) * worldW;
+  const d3 = (zone.h / ph) * worldD;
   const color = isBlocked ? (hovered ? RED_HV : RED) : (hovered ? GREEN_HV : GREEN);
 
   useFrame(() => {
@@ -252,10 +272,10 @@ function GameCameraController({
 
 /* ── Loading fallback ────────────────────────────────────────────── */
 
-function LoadingPlane() {
+function LoadingPlane({ worldW, worldD }: { worldW: number; worldD: number }) {
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[WORLD_W / 2, 0, WORLD_D / 2]}>
-      <planeGeometry args={[WORLD_W, WORLD_D]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[worldW / 2, 0, worldD / 2]}>
+      <planeGeometry args={[worldW, worldD]} />
       <meshBasicMaterial color="#ffffff" />
     </mesh>
   );
@@ -336,6 +356,8 @@ function GameControls({ pressedRef }: { pressedRef: React.MutableRefObject<Set<s
 
 export function FloorBlueprint3D({
   floorPlanImage,
+  planWidth,
+  planHeight,
   width = "100%",
   height = "100%",
   className = "",
@@ -343,7 +365,10 @@ export function FloorBlueprint3D({
   zones = [],
   blockedZones = new Set<string>(),
   onZoneToggle,
+  navPathPoints = [],
 }: FloorBlueprint3DProps) {
+  const worldW = 32;
+  const worldD = (planHeight / planWidth) * worldW;
   const pressedRef = useRef(new Set<string>());
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
 
@@ -363,46 +388,77 @@ export function FloorBlueprint3D({
 
   const trafficPoints = useMemo(() => {
     return people.map((p) => {
-      const img = arToImage(p.x, p.y);
-      const { wx, wz } = imgToWorld(img.x, img.y);
+      const img = arToImageOnPlan(p.x, p.y, planWidth, planHeight);
+      const { wx, wz } = imgToWorld(img.x, img.y, planWidth, planHeight, worldW, worldD);
       return { id: p.id, wx, wz, label: p.userName ?? p.id };
     });
-  }, [people]);
+  }, [people, planWidth, planHeight, worldW, worldD]);
 
   const handleToggle = useCallback(
     (zoneId: string) => onZoneToggle?.(zoneId),
     [onZoneToggle]
   );
 
+  const navLinePoints = useMemo(() => {
+    if (!navPathPoints.length) return [] as [number, number, number][];
+    return navPathPoints.map(
+      (p) =>
+        [(p.x / planWidth) * worldW, 0.32, (p.y / planHeight) * worldD] as [number, number, number],
+    );
+  }, [navPathPoints, planWidth, planHeight, worldW, worldD]);
+
   return (
     <div className={`${className} relative`} style={{ width, height, minHeight: 400 }}>
       <Canvas
         shadows
-        camera={{ position: [WORLD_W / 2, 12, WORLD_D + 8], fov: 45, near: 0.1, far: 200 }}
+        camera={{ position: [worldW / 2, 16, worldD + 14], fov: 48, near: 0.1, far: 400 }}
         gl={{ antialias: true, alpha: false }}
         style={{ background: "#ffffff", borderRadius: 12 }}
       >
         <ambientLight intensity={0.9} />
         <directionalLight
-          position={[WORLD_W, 15, -5]}
+          position={[worldW, 22, -8]}
           intensity={1.2}
           castShadow
           shadow-mapSize-width={2048}
           shadow-mapSize-height={2048}
-          shadow-camera-left={-WORLD_W}
-          shadow-camera-right={WORLD_W}
-          shadow-camera-top={WORLD_D}
-          shadow-camera-bottom={-WORLD_D}
+          shadow-camera-left={-worldW}
+          shadow-camera-right={worldW}
+          shadow-camera-top={worldD}
+          shadow-camera-bottom={-worldD}
         />
-        <directionalLight position={[-5, 10, WORLD_D]} intensity={0.4} />
+        <directionalLight position={[-8, 14, worldD]} intensity={0.4} />
         <hemisphereLight args={["#ffffff", "#f0fdf4", 0.4]} />
 
-        <Suspense fallback={<LoadingPlane />}>
-          <FloorPlane image={floorPlanImage} />
+        <Suspense fallback={<LoadingPlane worldW={worldW} worldD={worldD} />}>
+          <FloorPlane image={floorPlanImage} worldW={worldW} worldD={worldD} />
         </Suspense>
 
+        {navLinePoints.length >= 2 && (
+          <Line points={navLinePoints} color="#2563eb" lineWidth={2} dashed={false} />
+        )}
+        {navPathPoints.map((p, i) => (
+          <mesh
+            key={`nav-${i}`}
+            position={[(p.x / planWidth) * worldW, 0.42, (p.y / planHeight) * worldD]}
+            castShadow
+          >
+            <sphereGeometry args={[0.08, 12, 12]} />
+            <meshStandardMaterial color="#2563eb" emissive="#1e40af" emissiveIntensity={0.35} />
+          </mesh>
+        ))}
+
         {zones.map((zone) => (
-          <ZoneBlock key={zone.zone_id} zone={zone} isBlocked={blockedZones.has(zone.zone_id)} onToggle={() => handleToggle(zone.zone_id)} />
+          <ZoneBlock
+            key={zone.zone_id}
+            zone={zone}
+            isBlocked={blockedZones.has(zone.zone_id)}
+            onToggle={() => handleToggle(zone.zone_id)}
+            pw={planWidth}
+            ph={planHeight}
+            worldW={worldW}
+            worldD={worldD}
+          />
         ))}
 
         {trafficPoints.map((p) => (
@@ -414,11 +470,11 @@ export function FloorBlueprint3D({
         <OrbitControls
           ref={controlsRef}
           makeDefault
-          target={[WORLD_W / 2, 0, WORLD_D / 2]}
+          target={[worldW / 2, 0, worldD / 2]}
           minPolarAngle={0.1}
           maxPolarAngle={Math.PI / 2.1}
-          minDistance={2}
-          maxDistance={30}
+          minDistance={3}
+          maxDistance={55}
           enableDamping
           dampingFactor={0.08}
           enablePan

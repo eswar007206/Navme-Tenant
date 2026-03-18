@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   LuTrash2 as Trash,
@@ -6,22 +6,22 @@ import {
   LuPencil as Pencil,
   LuSave as Save,
   LuLoaderCircle as Loader2,
+  LuPenLine as PenLine,
+  LuUndo2 as Undo2,
 } from "react-icons/lu";
 import { supabase } from "@/lib/supabase";
-import { FLOOR_IMG_WIDTH, FLOOR_IMG_HEIGHT, FLOOR_CROP_Y, FLOOR_CROP_W, FLOOR_CROP_H } from "@/lib/mapCoordinates";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { useRBAC } from "@/hooks/useRBAC";
-
-const IMG_W = FLOOR_IMG_WIDTH;
-const IMG_H = FLOOR_IMG_HEIGHT;
+import { FLOOR_MAP_PNG, getFloorPlanPixels } from "@/data/floorPlanDimensions";
+import { normalizeNavRowsFromSelect, type NavPathRow } from "@/lib/floorNavPaths";
 
 /* ── Floor config ────────────────────────────────────────── */
 
 type FloorKey = "ground" | "first";
 
-const FLOORS: { key: FloorKey; label: string; image: string; invert?: boolean }[] = [
-  { key: "ground", label: "Ground Floor", image: "/GroundFloor.png" },
-  { key: "first", label: "First Floor", image: "/FirstFloor.png" },
+const FLOORS: { key: FloorKey; label: string; invert?: boolean }[] = [
+  { key: "ground", label: "Ground Floor" },
+  { key: "first", label: "First Floor" },
 ];
 
 /* ── Types ────────────────────────────────────────────────── */
@@ -53,6 +53,10 @@ interface EditorZone {
 }
 
 const QUERY_KEY = ["access-control-zones"];
+/** Public cache — Access Control / Heatmap read this */
+const NAV_PATHS_PUBLIC_KEY = ["floor-nav-paths"];
+/** Zone Editor only — never wiped by other pages refetching */
+const NAV_PATHS_EDITOR_KEY = ["floor-nav-paths", "zone-editor"] as const;
 
 async function fetchZones(): Promise<DbZone[]> {
   const { data, error } = await supabase
@@ -76,6 +80,11 @@ function dbToEditor(db: DbZone): EditorZone {
 
 type DragMode = null | "move" | "resize-tl" | "resize-tr" | "resize-bl" | "resize-br" | "create";
 
+interface NavPt {
+  x: number;
+  y: number;
+}
+
 let idCounter = Date.now();
 function nextZoneId() {
   return `zone-${++idCounter}`;
@@ -84,7 +93,120 @@ function nextZoneId() {
 export default function ZoneEditor() {
   const { canWrite } = useRBAC();
   const queryClient = useQueryClient();
+  const [navPersistError, setNavPersistError] = useState<string | null>(null);
   const { data: dbZones, isLoading } = useQuery({ queryKey: QUERY_KEY, queryFn: fetchZones });
+
+  const {
+    data: navPathRows,
+    isFetched: navPathsFetched,
+    isError: navPathsQueryFailed,
+    error: navPathsQueryError,
+  } = useQuery({
+    queryKey: NAV_PATHS_EDITOR_KEY,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("floor_nav_paths").select("floor, points");
+      if (error) {
+        console.warn("floor_nav_paths (run scripts/floor-nav-paths-setup.sql):", error.message);
+        throw new Error(error.message);
+      }
+      return normalizeNavRowsFromSelect(data as { floor: string; points: unknown }[] | null);
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: true,
+    retry: 1,
+  });
+
+  /** Single source of truth — survives tab switches; synced to DB automatically */
+  const navPathsByFloor = useMemo((): Record<FloorKey, NavPt[]> => {
+    const rows = Array.isArray(navPathRows) ? navPathRows : [];
+    return {
+      ground: rows.find((r) => r.floor === "ground")?.points ?? [],
+      first: rows.find((r) => r.floor === "first")?.points ?? [],
+    };
+  }, [navPathRows]);
+
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const persistNavPathsToDb = useCallback(async () => {
+    const rows = queryClient.getQueryData(NAV_PATHS_EDITOR_KEY) as NavPathRow[] | undefined;
+    if (!Array.isArray(rows) || rows.length < 2) return;
+    const g = rows.find((r) => r.floor === "ground")?.points ?? [];
+    const f = rows.find((r) => r.floor === "first")?.points ?? [];
+    const payload: NavPathRow[] = [
+      { floor: "ground", points: g },
+      { floor: "first", points: f },
+    ];
+    const { data: saved, error } = await supabase
+      .from("floor_nav_paths")
+      .upsert(
+        [
+          { floor: "ground", points: g },
+          { floor: "first", points: f },
+        ],
+        { onConflict: "floor" },
+      )
+      .select("floor, points");
+
+    if (error) {
+      console.warn("floor_nav_paths save:", error.message);
+      setNavPersistError(error.message);
+      return;
+    }
+    setNavPersistError(null);
+    const normalized =
+      saved && saved.length > 0
+        ? normalizeNavRowsFromSelect(saved as { floor: string; points: unknown }[])
+        : payload;
+    queryClient.setQueryData(NAV_PATHS_PUBLIC_KEY, normalized);
+    queryClient.setQueryData(NAV_PATHS_EDITOR_KEY, normalized);
+    void queryClient.invalidateQueries({ queryKey: NAV_PATHS_PUBLIC_KEY, exact: true });
+    window.dispatchEvent(new CustomEvent("floor-nav-paths-updated"));
+  }, [queryClient]);
+
+  const schedulePersistNavPaths = useCallback(() => {
+    if (persistTimer.current) clearTimeout(persistTimer.current);
+    persistTimer.current = setTimeout(() => {
+      persistTimer.current = null;
+      void persistNavPathsToDb();
+    }, 400);
+  }, [persistNavPathsToDb]);
+
+  const patchNavFloor = useCallback(
+    (floor: FloorKey, updater: (pts: NavPt[]) => NavPt[]) => {
+      queryClient.setQueryData(NAV_PATHS_EDITOR_KEY, (old) => {
+        const list = Array.isArray(old) ? (old as NavPathRow[]) : [];
+        const g0 = list.find((r) => r.floor === "ground")?.points ?? [];
+        const f0 = list.find((r) => r.floor === "first")?.points ?? [];
+        const next: Record<FloorKey, NavPt[]> = { ground: [...g0], first: [...f0] };
+        next[floor] = updater(next[floor]);
+        return [
+          { floor: "ground", points: next.ground },
+          { floor: "first", points: next.first },
+        ];
+      });
+      schedulePersistNavPaths();
+    },
+    [queryClient, schedulePersistNavPaths],
+  );
+
+  useEffect(() => {
+    const flush = () => {
+      if (persistTimer.current) {
+        clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
+      void persistNavPathsToDb();
+    };
+    const onVis = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      flush();
+    };
+  }, [persistNavPathsToDb]);
 
   const [zones, setZones] = useState<EditorZone[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -94,8 +216,11 @@ export default function ZoneEditor() {
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [activeFloor, setActiveFloor] = useState<FloorKey>("ground");
   const [dbLoaded, setDbLoaded] = useState(false);
+  const [isDrawingNavPath, setIsDrawingNavPath] = useState(false);
 
   const currentFloor = FLOORS.find((f) => f.key === activeFloor)!;
+  const { w: IMG_W, h: IMG_H } = getFloorPlanPixels(activeFloor);
+  const floorPlanImage = FLOOR_MAP_PNG[activeFloor];
 
   // Sync DB data into local state on first load
   useEffect(() => {
@@ -109,6 +234,7 @@ export default function ZoneEditor() {
   const floorZones = zones.filter((z) => z.floor === activeFloor);
 
   const svgRef = useRef<SVGSVGElement>(null);
+  const suppressNextNavClick = useRef(false);
   const dragMode = useRef<DragMode>(null);
   const dragZoneId = useRef<string | null>(null);
   const dragStart = useRef({ mx: 0, my: 0, ox: 0, oy: 0, ow: 0, oh: 0 });
@@ -145,6 +271,7 @@ export default function ZoneEditor() {
 
   const onBgPointerDown = useCallback(
     (e: React.MouseEvent) => {
+      if (isDrawingNavPath) return;
       const p = toSvg(e);
       if (!p) return;
       const zid = nextZoneId();
@@ -165,8 +292,48 @@ export default function ZoneEditor() {
       dragZoneId.current = zid;
       dragStart.current = { mx: p.x, my: p.y, ox: p.x, oy: p.y, ow: 0, oh: 0 };
     },
-    [toSvg, activeFloor]
+    [toSvg, activeFloor, isDrawingNavPath]
   );
+
+  const navPathPoints = navPathsByFloor[activeFloor] ?? [];
+
+  const appendNavPointAtClient = useCallback(
+    (clientX: number, clientY: number) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const pt = svg.createSVGPoint();
+      pt.x = clientX;
+      pt.y = clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+      const svgPt = pt.matrixTransform(ctm.inverse());
+      const x = Math.max(0, Math.min(IMG_W, svgPt.x));
+      const y = Math.max(0, Math.min(IMG_H, svgPt.y));
+      patchNavFloor(activeFloor, (pts) => [...pts, { x, y }]);
+    },
+    [activeFloor, IMG_W, IMG_H, patchNavFloor],
+  );
+
+  const addNavPathPoint = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (suppressNextNavClick.current) {
+        suppressNextNavClick.current = false;
+        return;
+      }
+      appendNavPointAtClient(e.clientX, e.clientY);
+    },
+    [appendNavPointAtClient],
+  );
+
+  const undoNavPoint = useCallback(() => {
+    patchNavFloor(activeFloor, (pts) => pts.slice(0, -1));
+  }, [activeFloor, patchNavFloor]);
+
+  const clearNavPath = useCallback(() => {
+    patchNavFloor(activeFloor, () => []);
+  }, [activeFloor, patchNavFloor]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -221,7 +388,7 @@ export default function ZoneEditor() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [toSvg]);
+  }, [toSvg, IMG_W, IMG_H]);
 
   const deleteZone = useCallback((zoneId: string) => {
     setZones((prev) => prev.filter((z) => z.zone_id !== zoneId));
@@ -236,6 +403,12 @@ export default function ZoneEditor() {
   const saveToDb = useCallback(async () => {
     setSaving(true);
     try {
+      if (persistTimer.current) {
+        clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
+      await persistNavPathsToDb();
+
       // Get existing zone_ids from DB so we know which ones to delete
       const { data: existing } = await supabase
         .from("access_control_zones")
@@ -273,9 +446,10 @@ export default function ZoneEditor() {
         if (error) throw error;
       }
 
-      // Refresh both zone editor and heatmap queries
       queryClient.invalidateQueries({ queryKey: QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
+      const ed = queryClient.getQueryData(NAV_PATHS_EDITOR_KEY) as NavPathRow[] | undefined;
+      if (ed?.length === 2) queryClient.setQueryData(NAV_PATHS_PUBLIC_KEY, ed);
       setLastSaved(new Date().toLocaleTimeString());
     } catch (err) {
       console.error("Failed to save zones:", err);
@@ -283,13 +457,14 @@ export default function ZoneEditor() {
     } finally {
       setSaving(false);
     }
-  }, [zones, queryClient]);
+  }, [zones, queryClient, persistNavPathsToDb]);
 
   // Clear selection when switching floors
   const handleFloorChange = useCallback((floor: FloorKey) => {
     setActiveFloor(floor);
     setSelectedId(null);
     setEditingLabel(null);
+    setIsDrawingNavPath(false);
   }, []);
 
   const HANDLE = 8;
@@ -318,6 +493,20 @@ export default function ZoneEditor() {
         </div>
       )}
 
+      {navPathsQueryFailed && (
+        <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          <strong>Line paths can&apos;t load from the database.</strong> Run{" "}
+          <code className="text-xs bg-muted px-1 rounded">scripts/floor-nav-paths-setup.sql</code> in Supabase SQL
+          Editor.{" "}
+          {navPathsQueryError instanceof Error ? navPathsQueryError.message : String(navPathsQueryError ?? "")}
+        </div>
+      )}
+      {navPersistError && (
+        <div className="rounded-lg border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+          <strong>Could not save the line path:</strong> {navPersistError}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="section-card flex flex-wrap items-center gap-3">
         {/* Floor selector */}
@@ -338,8 +527,60 @@ export default function ZoneEditor() {
           ))}
         </div>
 
+        {canWrite && !isDrawingNavPath && (
+          <span className="text-xs text-muted-foreground">Click &amp; drag on empty area to create a zone.</span>
+        )}
         {canWrite && (
-          <span className="text-xs text-muted-foreground">Click & drag on empty area to create a zone.</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={!navPathsFetched || navPathsQueryFailed}
+              onClick={() => setIsDrawingNavPath((v) => !v)}
+              title={
+                navPathsQueryFailed
+                  ? "Fix database (see banner), then refresh the page"
+                  : !navPathsFetched
+                    ? "Loading saved paths…"
+                    : undefined
+              }
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                isDrawingNavPath
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "border border-border text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              }`}
+            >
+              <PenLine className="w-3.5 h-3.5" />
+              {!navPathsFetched
+                ? "Loading paths…"
+                : isDrawingNavPath
+                  ? "Drawing line — click map"
+                  : "Draw line path"}
+            </button>
+            {navPathPoints.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={undoNavPoint}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-border text-muted-foreground hover:bg-muted/50"
+                >
+                  <Undo2 className="w-3.5 h-3.5" /> Undo point
+                </button>
+                <button
+                  type="button"
+                  onClick={clearNavPath}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-border text-red-500 hover:bg-red-500/10"
+                >
+                  <Trash className="w-3.5 h-3.5" /> Clear line
+                </button>
+                <span className="text-xs text-muted-foreground">{navPathPoints.length} pts</span>
+              </>
+            )}
+          </div>
+        )}
+        {canWrite && isDrawingNavPath && (
+          <span className="text-xs text-amber-600 font-medium">
+            Click the map to add points. The line <strong>saves automatically</strong> and appears on Access Control.
+          </span>
         )}
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground">{floorZones.length} zones on {currentFloor.label}</span>
@@ -364,16 +605,22 @@ export default function ZoneEditor() {
       <div className="flex flex-col lg:flex-row gap-4">
         {/* SVG Canvas */}
         <div className="flex-1 rounded-xl border border-border bg-card overflow-hidden">
-          <div className="relative" style={{ aspectRatio: `${FLOOR_CROP_W} / ${FLOOR_CROP_H}` }}>
+          <div className="relative" style={{ aspectRatio: `${IMG_W} / ${IMG_H}` }}>
             <svg
               ref={svgRef}
-              viewBox={`0 ${FLOOR_CROP_Y} ${FLOOR_CROP_W} ${FLOOR_CROP_H}`}
+              viewBox={`0 0 ${IMG_W} ${IMG_H}`}
               preserveAspectRatio="xMidYMid meet"
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", cursor: canWrite ? "crosshair" : "default" }}
-              onMouseDown={canWrite ? onBgPointerDown : undefined}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                cursor: canWrite ? (isDrawingNavPath ? "crosshair" : "crosshair") : "default",
+              }}
+              onMouseDown={canWrite && !isDrawingNavPath ? onBgPointerDown : undefined}
             >
               <image
-                href={currentFloor.image}
+                href={floorPlanImage}
                 x="0"
                 y="0"
                 width={IMG_W}
@@ -426,6 +673,50 @@ export default function ZoneEditor() {
                   </g>
                 );
               })}
+              {navPathPoints.length >= 2 && (
+                <polyline
+                  points={navPathPoints.map((p) => `${p.x},${p.y}`).join(" ")}
+                  fill="none"
+                  stroke="#2563eb"
+                  strokeWidth={Math.max(2, IMG_W / 900)}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ pointerEvents: "none" }}
+                />
+              )}
+              {navPathPoints.map((p, i) => (
+                <circle
+                  key={`nav-${activeFloor}-${i}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={Math.max(5, IMG_W / 520)}
+                  fill="#2563eb"
+                  stroke="#fff"
+                  strokeWidth={2}
+                  style={{ pointerEvents: "none" }}
+                />
+              ))}
+              {canWrite && isDrawingNavPath && (
+                <rect
+                  x={0}
+                  y={0}
+                  width={IMG_W}
+                  height={IMG_H}
+                  fill="rgba(30,64,175,0.06)"
+                  style={{ cursor: "crosshair", touchAction: "manipulation" }}
+                  onClick={addNavPathPoint}
+                  onTouchEnd={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    suppressNextNavClick.current = true;
+                    window.setTimeout(() => {
+                      suppressNextNavClick.current = false;
+                    }, 500);
+                    const t = e.changedTouches[0];
+                    if (t) appendNavPointAtClient(t.clientX, t.clientY);
+                  }}
+                />
+              )}
             </svg>
           </div>
         </div>
