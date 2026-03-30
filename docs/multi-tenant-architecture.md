@@ -31,9 +31,10 @@ Set these before running `npm run dev` or `npm start`:
 SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
 APP_SESSION_SECRET=...
+CORS_ALLOWED_ORIGINS=https://your-mattecraft-app.com,https://your-navme-dashboard.onrender.com
 ```
 
-`VITE_SUPABASE_URL` can still exist for the client, but the new backend API depends on `SUPABASE_SERVICE_ROLE_KEY`.
+For the hosted multi-tenant setup, Mattecraft should call this backend API. You do not need browser-side `VITE_SUPABASE_URL` or `VITE_SUPABASE_PUBLISHABLE_KEY` for the current dashboard flow.
 
 ## API surface
 

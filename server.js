@@ -31,7 +31,7 @@ const configuredCorsOrigins = String(
 const allowAllCorsOrigins =
   configuredCorsOrigins.includes("*") || (isDev && configuredCorsOrigins.length === 0);
 
-const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const sessionSecret =
   process.env.APP_SESSION_SECRET ||
@@ -50,7 +50,7 @@ const supabaseAdmin = hasBackendConfig
 
 if (!hasBackendConfig) {
   console.warn(
-    "Missing SUPABASE_URL/VITE_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. API routes will return 500 until they are configured.",
+    "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. API routes will return 500 until they are configured.",
   );
 }
 
@@ -140,7 +140,7 @@ function requireSupabase(res) {
   if (supabaseAdmin) return true;
   res.status(500).json({
     error:
-      "Backend API is not configured. Set SUPABASE_URL (or VITE_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY.",
+      "Backend API is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
   });
   return false;
 }
