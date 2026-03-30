@@ -1,6 +1,6 @@
 /** Parse JSONB / API `points` into {x,y}[] — handles stringified JSON from some clients */
 
-import { supabase } from "@/lib/supabase";
+import { selectRows } from "@/lib/api-client";
 
 export interface FloorNavPoint {
   x: number;
@@ -44,10 +44,15 @@ export function normalizeNavRowsFromSelect(
 
 /** Shared fetch for Access Control + Heatmap (always 2 floors) */
 export async function fetchFloorNavPathsRows(): Promise<NavPathRow[]> {
-  const { data, error } = await supabase.from("floor_nav_paths").select("floor, points");
-  if (error) {
-    console.warn("[floor_nav_paths] read failed:", error.message);
+  try {
+    const data = await selectRows<{ floor: string; points: unknown }>({
+      table: "floor_nav_paths",
+      select: "floor, points",
+    });
+    return normalizeNavRowsFromSelect(data);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[floor_nav_paths] read failed:", message);
     return normalizeNavRowsFromSelect([]);
   }
-  return normalizeNavRowsFromSelect(data as { floor: string; points: unknown }[]);
 }

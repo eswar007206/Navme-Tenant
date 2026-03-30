@@ -1,35 +1,34 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/lib/supabase";
+import {
+  deleteRows,
+  insertRow,
+  selectRows,
+  updateRows,
+} from "@/lib/api-client";
 import type { TableConfig } from "@/lib/tableConfig";
 import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function useTableData(config: TableConfig) {
   const queryClient = useQueryClient();
-  const queryKey = ["table", config.tableName];
+  const { activeOrganizationId } = useAuth();
+  const queryKey = ["table", config.tableName, activeOrganizationId];
 
   const query = useQuery({
     queryKey,
     queryFn: async () => {
-      let q = supabase.from(config.tableName).select("*");
-      if (config.defaultSort) {
-        q = q.order(config.defaultSort.key, {
-          ascending: config.defaultSort.direction === "asc",
-        });
-      }
-      const { data, error } = await q;
-      if (error) throw error;
-      return data as Record<string, unknown>[];
+      return selectRows<Record<string, unknown>>({
+        table: config.tableName,
+        select: "*",
+        orderBy: config.defaultSort?.key,
+        ascending: config.defaultSort?.direction === "asc",
+      });
     },
   });
 
   const insertMutation = useMutation({
     mutationFn: async (row: Record<string, unknown>) => {
-      const { data, error } = await supabase
-        .from(config.tableName)
-        .insert(row)
-        .select();
-      if (error) throw error;
-      return data;
+      return insertRow(config.tableName, row);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
@@ -48,13 +47,11 @@ export function useTableData(config: TableConfig) {
       id: unknown;
       updates: Record<string, unknown>;
     }) => {
-      const { data, error } = await supabase
-        .from(config.tableName)
-        .update(updates)
-        .eq(config.primaryKey, id as string)
-        .select();
-      if (error) throw error;
-      return data;
+      return updateRows(
+        config.tableName,
+        updates,
+        [{ column: config.primaryKey, op: "eq", value: String(id) }],
+      );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
@@ -67,11 +64,9 @@ export function useTableData(config: TableConfig) {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: unknown) => {
-      const { error } = await supabase
-        .from(config.tableName)
-        .delete()
-        .eq(config.primaryKey, id as string);
-      if (error) throw error;
+      await deleteRows(config.tableName, [
+        { column: config.primaryKey, op: "eq", value: String(id) },
+      ]);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });

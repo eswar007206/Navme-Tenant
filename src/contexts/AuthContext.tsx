@@ -1,27 +1,37 @@
 import {
   createContext,
-  useContext,
-  useState,
-  useEffect,
   useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
   type ReactNode,
 } from "react";
-import { supabase } from "@/lib/supabase";
+import {
+  fetchSessionUser,
+  loginWithPassword,
+  readStoredSession,
+  writeStoredSession,
+} from "@/lib/api-client";
 import type { AdminUser, AuthSession } from "@/lib/auth-types";
-
-const STORAGE_KEY = "navme-demo-admin-session";
-const SESSION_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
 
 interface AuthContextType {
   user: AdminUser | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   isSuperAdmin: boolean;
+  activeOrganizationId: string | null;
+  activeOrganizationName: string | null;
+  activeOrganizationSlug: string | null;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  skipLogin: () => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
   updateAvatar: (url: string) => void;
+  setActiveOrganization: (organization: {
+    id: string;
+    name: string;
+    slug: string;
+  } | null) => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -29,161 +39,172 @@ const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
   isLoading: true,
   isSuperAdmin: false,
+  activeOrganizationId: null,
+  activeOrganizationName: null,
+  activeOrganizationSlug: null,
   login: async () => ({ success: false }),
-  skipLogin: () => {},
   logout: () => {},
   refreshUser: async () => {},
   updateAvatar: () => {},
+  setActiveOrganization: () => {},
 });
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AdminUser | null>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const session = JSON.parse(stored) as AuthSession;
-        return session.user;
-      }
-    } catch {}
-    return null;
-  });
-  const [isLoading, setIsLoading] = useState(false);
+function getDefaultOrganization(user: AdminUser, current?: AuthSession | null) {
+  const activeOrganizationId = current?.activeOrganizationId ?? user.organization_id;
+  const activeOrganizationName = current?.activeOrganizationName ?? user.organization_name;
+  const activeOrganizationSlug = current?.activeOrganizationSlug ?? user.organization_slug;
 
-  const persistSession = useCallback((adminUser: AdminUser) => {
-    const session: AuthSession = { user: adminUser, loginAt: Date.now() };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  }, []);
+  return {
+    activeOrganizationId,
+    activeOrganizationName,
+    activeOrganizationSlug,
+  };
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const initialSession = readStoredSession();
+  const [user, setUser] = useState<AdminUser | null>(initialSession?.user ?? null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [activeOrganizationId, setActiveOrganizationId] = useState<string | null>(
+    initialSession?.activeOrganizationId ?? initialSession?.user.organization_id ?? null,
+  );
+  const [activeOrganizationName, setActiveOrganizationName] = useState<string | null>(
+    initialSession?.activeOrganizationName ?? initialSession?.user.organization_name ?? null,
+  );
+  const [activeOrganizationSlug, setActiveOrganizationSlug] = useState<string | null>(
+    initialSession?.activeOrganizationSlug ?? initialSession?.user.organization_slug ?? null,
+  );
 
   const clearSession = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+    writeStoredSession(null);
     setUser(null);
+    setActiveOrganizationId(null);
+    setActiveOrganizationName(null);
+    setActiveOrganizationSlug(null);
   }, []);
 
-  const skipLogin = useCallback(() => {
-    const adminUser: AdminUser = {
-      id: "demo-admin",
-      email: "demo@navme.com",
-      display_name: "Demo Admin",
-      role: "super_admin",
-      avatar_url: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-    setUser(adminUser);
-    persistSession(adminUser);
-  }, [persistSession]);
+  const login = useCallback(async (email: string, password: string) => {
+    try {
+      const response = await loginWithPassword(email, password);
+      const loginAt = Date.now();
+      writeStoredSession({
+        token: response.token,
+        user: response.user,
+        loginAt,
+        activeOrganizationId: response.user.organization_id,
+        activeOrganizationName: response.user.organization_name,
+        activeOrganizationSlug: response.user.organization_slug,
+      });
+      setUser(response.user);
+      setActiveOrganizationId(response.user.organization_id);
+      setActiveOrganizationName(response.user.organization_name);
+      setActiveOrganizationSlug(response.user.organization_slug);
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to sign in.";
+      clearSession();
+      return { success: false, error: message };
+    }
+  }, [clearSession]);
 
-  // Validate a stored session against the DB
-  const validateSession = useCallback(
-    async (adminId: string) => {
-      // Don't validate the demo admin against the database
-      if (adminId === "demo-admin") {
-        return;
-      }
-      try {
-        const { data, error } = await supabase
-          .from("dashboard_admins_safe")
-          .select("*")
-          .eq("id", adminId)
-          .single();
+  const refreshUser = useCallback(async () => {
+    const current = readStoredSession();
+    if (!current?.token) {
+      clearSession();
+      return;
+    }
 
-        if (error || !data) {
-          clearSession();
-          return;
-        }
-
-        const adminUser: AdminUser = data as AdminUser;
-        setUser(adminUser);
-        persistSession(adminUser);
-      } catch {
-        clearSession();
-      }
-    },
-    [clearSession, persistSession],
-  );
-
-  // On mount: restore session from localStorage
-  useEffect(() => {
-    // Auth bypass: always default to demo user immediately
-    setIsLoading(false);
-  }, []);
-
-  const login = useCallback(
-    async (email: string, password: string) => {
-      if (email === "demo@navme" && password === "123456") {
-        const adminUser: AdminUser = {
-          id: "demo-admin",
-          email: "demo@navme",
-          display_name: "Demo Super Admin",
-          role: "super_admin",
-          avatar_url: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        setUser(adminUser);
-        persistSession(adminUser);
-        return { success: true };
-      }
-
-      try {
-        const { data, error } = await supabase.rpc("verify_admin_login", {
-          p_email: email,
-          p_password: password,
-        });
-
-        if (error) {
-          return { success: false, error: "Something went wrong. Please try again." };
-        }
-        if (!data) {
-          return { success: false, error: "Invalid email or password." };
-        }
-
-        const adminUser: AdminUser = data as AdminUser;
-        setUser(adminUser);
-        persistSession(adminUser);
-        return { success: true };
-      } catch {
-        return { success: false, error: "Network error. Please try again." };
-      }
-    },
-    [persistSession],
-  );
+    try {
+      const nextUser = await fetchSessionUser();
+      writeStoredSession({
+        token: current.token,
+        user: nextUser,
+        loginAt: current.loginAt,
+        ...getDefaultOrganization(nextUser, current),
+      });
+      setUser(nextUser);
+      setActiveOrganizationId(current.activeOrganizationId ?? nextUser.organization_id);
+      setActiveOrganizationName(current.activeOrganizationName ?? nextUser.organization_name);
+      setActiveOrganizationSlug(current.activeOrganizationSlug ?? nextUser.organization_slug);
+    } catch {
+      clearSession();
+    }
+  }, [clearSession]);
 
   const logout = useCallback(() => {
     clearSession();
   }, [clearSession]);
 
-  const refreshUser = useCallback(async () => {
-    if (!user) return;
-    await validateSession(user.id);
-  }, [user, validateSession]);
-
   const updateAvatar = useCallback((url: string) => {
-    setUser((prev) => {
-      if (!prev) return prev;
-      const updated = { ...prev, avatar_url: url };
-      persistSession(updated);
+    setUser((previous) => {
+      if (!previous) return previous;
+      const updated = { ...previous, avatar_url: url };
+      const stored = readStoredSession();
+      if (stored) {
+        writeStoredSession({
+          ...stored,
+          user: updated,
+        });
+      }
       return updated;
     });
-  }, [persistSession]);
+  }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        isAuthenticated: !!user,
-        isLoading,
-        isSuperAdmin: user?.role === "super_admin",
-        login,
-        skipLogin,
-        logout,
-        refreshUser,
-        updateAvatar,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+  const setActiveOrganization = useCallback((organization: { id: string; name: string; slug: string } | null) => {
+    const stored = readStoredSession();
+    if (!stored) return;
+
+    writeStoredSession({
+      ...stored,
+      activeOrganizationId: organization?.id ?? stored.user.organization_id,
+      activeOrganizationName: organization?.name ?? stored.user.organization_name,
+      activeOrganizationSlug: organization?.slug ?? stored.user.organization_slug,
+    });
+
+    setActiveOrganizationId(organization?.id ?? stored.user.organization_id);
+    setActiveOrganizationName(organization?.name ?? stored.user.organization_name);
+    setActiveOrganizationSlug(organization?.slug ?? stored.user.organization_slug);
+  }, []);
+
+  useEffect(() => {
+    const stored = readStoredSession();
+    if (!stored?.token) {
+      setIsLoading(false);
+      return;
+    }
+
+    void refreshUser().finally(() => {
+      setIsLoading(false);
+    });
+  }, [refreshUser]);
+
+  const value = useMemo<AuthContextType>(() => ({
+    user,
+    isAuthenticated: !!user,
+    isLoading,
+    isSuperAdmin: user?.role === "super_admin",
+    activeOrganizationId,
+    activeOrganizationName,
+    activeOrganizationSlug,
+    login,
+    logout,
+    refreshUser,
+    updateAvatar,
+    setActiveOrganization,
+  }), [
+    activeOrganizationId,
+    activeOrganizationName,
+    activeOrganizationSlug,
+    isLoading,
+    login,
+    logout,
+    refreshUser,
+    setActiveOrganization,
+    updateAvatar,
+    user,
+  ]);
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

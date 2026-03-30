@@ -9,7 +9,7 @@ import {
   LuPenLine as PenLine,
   LuUndo2 as Undo2,
 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
+import { deleteRows, selectRows, upsertRows } from "@/lib/api-client";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { useRBAC } from "@/hooks/useRBAC";
 import { FLOOR_MAP_PNG, getFloorPlanPixels } from "@/data/floorPlanDimensions";
@@ -59,12 +59,13 @@ const NAV_PATHS_PUBLIC_KEY = ["floor-nav-paths"];
 const NAV_PATHS_EDITOR_KEY = ["floor-nav-paths", "zone-editor"] as const;
 
 async function fetchZones(): Promise<DbZone[]> {
-  const { data, error } = await supabase
-    .from("access_control_zones")
-    .select("*")
-    .order("zone_id", { ascending: true });
-  if (error) throw error;
-  return (data ?? []).map((r) => ({
+  const data = await selectRows<Record<string, unknown>>({
+    table: "access_control_zones",
+    select: "*",
+    orderBy: "zone_id",
+    ascending: true,
+  });
+  return data.map((r) => ({
     ...r,
     x: Number(r.x),
     y: Number(r.y),
@@ -104,12 +105,17 @@ export default function ZoneEditor() {
   } = useQuery({
     queryKey: NAV_PATHS_EDITOR_KEY,
     queryFn: async () => {
-      const { data, error } = await supabase.from("floor_nav_paths").select("floor, points");
-      if (error) {
-        console.warn("floor_nav_paths (run scripts/floor-nav-paths-setup.sql):", error.message);
-        throw new Error(error.message);
+      try {
+        const data = await selectRows<{ floor: string; points: unknown }>({
+          table: "floor_nav_paths",
+          select: "floor, points",
+        });
+        return normalizeNavRowsFromSelect(data);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("floor_nav_paths (run scripts/floor-nav-paths-setup.sql):", message);
+        throw new Error(message);
       }
-      return normalizeNavRowsFromSelect(data as { floor: string; points: unknown }[] | null);
     },
     staleTime: 30_000,
     refetchOnWindowFocus: false,
@@ -137,31 +143,31 @@ export default function ZoneEditor() {
       { floor: "ground", points: g },
       { floor: "first", points: f },
     ];
-    const { data: saved, error } = await supabase
-      .from("floor_nav_paths")
-      .upsert(
+    try {
+      const saved = await upsertRows<{ floor: string; points: unknown }>(
+        "floor_nav_paths",
         [
           { floor: "ground", points: g },
           { floor: "first", points: f },
         ],
-        { onConflict: "floor" },
-      )
-      .select("floor, points");
-
-    if (error) {
-      console.warn("floor_nav_paths save:", error.message);
-      setNavPersistError(error.message);
+        "floor",
+        "floor, points",
+      );
+      setNavPersistError(null);
+      const normalized =
+        saved && saved.length > 0
+          ? normalizeNavRowsFromSelect(saved as { floor: string; points: unknown }[])
+          : payload;
+      queryClient.setQueryData(NAV_PATHS_PUBLIC_KEY, normalized);
+      queryClient.setQueryData(NAV_PATHS_EDITOR_KEY, normalized);
+      void queryClient.invalidateQueries({ queryKey: NAV_PATHS_PUBLIC_KEY, exact: true });
+      window.dispatchEvent(new CustomEvent("floor-nav-paths-updated"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn("floor_nav_paths save:", message);
+      setNavPersistError(message);
       return;
     }
-    setNavPersistError(null);
-    const normalized =
-      saved && saved.length > 0
-        ? normalizeNavRowsFromSelect(saved as { floor: string; points: unknown }[])
-        : payload;
-    queryClient.setQueryData(NAV_PATHS_PUBLIC_KEY, normalized);
-    queryClient.setQueryData(NAV_PATHS_EDITOR_KEY, normalized);
-    void queryClient.invalidateQueries({ queryKey: NAV_PATHS_PUBLIC_KEY, exact: true });
-    window.dispatchEvent(new CustomEvent("floor-nav-paths-updated"));
   }, [queryClient]);
 
   const schedulePersistNavPaths = useCallback(() => {
@@ -410,20 +416,19 @@ export default function ZoneEditor() {
       await persistNavPathsToDb();
 
       // Get existing zone_ids from DB so we know which ones to delete
-      const { data: existing } = await supabase
-        .from("access_control_zones")
-        .select("zone_id");
-      const existingIds = new Set((existing ?? []).map((r: { zone_id: string }) => r.zone_id));
+      const existing = await selectRows<{ zone_id: string }>({
+        table: "access_control_zones",
+        select: "zone_id",
+      });
+      const existingIds = new Set(existing.map((r) => r.zone_id));
       const currentIds = new Set(zones.map((z) => z.zone_id));
 
       // Delete zones that were removed (only those not in current list)
       const toDelete = [...existingIds].filter((id) => !currentIds.has(id));
       if (toDelete.length > 0) {
-        const { error: delErr } = await supabase
-          .from("access_control_zones")
-          .delete()
-          .in("zone_id", toDelete);
-        if (delErr) throw delErr;
+        await deleteRows("access_control_zones", [
+          { column: "zone_id", op: "in", value: toDelete },
+        ]);
       }
 
       // Upsert all current zones (insert or update by zone_id)
@@ -440,10 +445,7 @@ export default function ZoneEditor() {
           is_blocked: false,
           floor: z.floor,
         }));
-        const { error } = await supabase
-          .from("access_control_zones")
-          .upsert(rows, { onConflict: "zone_id" });
-        if (error) throw error;
+        await upsertRows("access_control_zones", rows, "zone_id");
       }
 
       queryClient.invalidateQueries({ queryKey: QUERY_KEY });

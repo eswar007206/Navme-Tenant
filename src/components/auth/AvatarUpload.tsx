@@ -2,8 +2,6 @@ import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { LuCamera as Camera, LuLoaderCircle as Loader2, LuX as X } from "react-icons/lu";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { supabase } from "@/lib/supabase";
-import { useAuth } from "@/contexts/AuthContext";
 
 interface AvatarUploadProps {
   currentUrl: string | null;
@@ -31,7 +29,6 @@ export function AvatarUpload({
   disabled = false,
   onUploaded,
 }: AvatarUploadProps) {
-  const { refreshUser } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);

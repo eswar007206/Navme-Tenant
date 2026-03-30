@@ -17,7 +17,7 @@ import {
   LuLoaderCircle as Loader2,
   LuOctagonX as OctagonX,
 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
+import { selectRows, selectSingleRow, updateRows } from "@/lib/api-client";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import type { EmergencyStuckReport, EmergencyCheckin, UnifiedEmergencyResponse } from "@/lib/emergency-types";
 import { ResponseSummaryCards } from "@/components/emergency/ResponseSummaryCards";
@@ -28,7 +28,6 @@ import { AllResponses } from "@/components/emergency/AllResponses";
 
 /* ── Constants ───────────────────────────────────────────── */
 
-const EMERGENCY_ROW_ID = "00000000-0000-0000-0000-000000000001";
 const EMERGENCY_QUERY_KEY = ["emergency-state"];
 const ZONES_QUERY_KEY = ["emergency-zones"];
 const STUCK_REPORTS_KEY = ["emergency-stuck"];
@@ -89,22 +88,26 @@ const EMERGENCY_CONTACTS = [
 /* ── DB helpers ──────────────────────────────────────────── */
 
 async function fetchEmergencyState(): Promise<EmergencyRow> {
-  const { data, error } = await supabase
-    .from("emergency_state")
-    .select("*")
-    .eq("id", EMERGENCY_ROW_ID)
-    .single();
-  if (error) throw error;
-  return data as EmergencyRow;
+  const data = await selectSingleRow<EmergencyRow>({
+    table: "emergency_state",
+    select: "*",
+    orderBy: "created_at",
+    ascending: true,
+  });
+  if (!data) {
+    throw new Error("Emergency state has not been initialized for this organization.");
+  }
+  return data;
 }
 
 async function fetchZones(): Promise<ZoneRow[]> {
-  const { data, error } = await supabase
-    .from("access_control_zones")
-    .select("*")
-    .order("zone_id");
-  if (error) throw error;
-  return (data ?? []).map((r: Record<string, unknown>) => ({
+  const data = await selectRows<Record<string, unknown>>({
+    table: "access_control_zones",
+    select: "*",
+    orderBy: "zone_id",
+    ascending: true,
+  });
+  return data.map((r: Record<string, unknown>) => ({
     zone_id: r.zone_id as string,
     label: r.label as string,
     x: Number(r.x),
@@ -118,21 +121,21 @@ async function fetchZones(): Promise<ZoneRow[]> {
 }
 
 async function fetchEmergencyStuckReports(): Promise<EmergencyStuckReport[]> {
-  const { data, error } = await supabase
-    .from("emergency_stuck_reports")
-    .select("*")
-    .order("updated_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []) as EmergencyStuckReport[];
+  return selectRows<EmergencyStuckReport>({
+    table: "emergency_stuck_reports",
+    select: "*",
+    orderBy: "updated_at",
+    ascending: false,
+  });
 }
 
 async function fetchEmergencyCheckins(): Promise<EmergencyCheckin[]> {
-  const { data, error } = await supabase
-    .from("emergency_checkins")
-    .select("*")
-    .order("updated_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []) as EmergencyCheckin[];
+  return selectRows<EmergencyCheckin>({
+    table: "emergency_checkins",
+    select: "*",
+    orderBy: "updated_at",
+    ascending: false,
+  });
 }
 
 /* ── Component ──────────────────────────────────────────── */
@@ -155,6 +158,7 @@ export default function EmergencySOS() {
   const { data: emergencyState, isLoading: loadingState } = useQuery({
     queryKey: EMERGENCY_QUERY_KEY,
     queryFn: fetchEmergencyState,
+    refetchInterval: 3000,
   });
 
   /* ── Fetch zones ── */
@@ -177,12 +181,14 @@ export default function EmergencySOS() {
     queryKey: STUCK_REPORTS_KEY,
     queryFn: fetchEmergencyStuckReports,
     enabled: isEmergencyActive,
+    refetchInterval: 3000,
   });
 
   const { data: checkins } = useQuery({
     queryKey: CHECKINS_KEY,
     queryFn: fetchEmergencyCheckins,
     enabled: isEmergencyActive,
+    refetchInterval: 3000,
   });
 
   // Map to unified response format for components
@@ -211,37 +217,6 @@ export default function EmergencySOS() {
   }, [stuckReports, checkins]);
 
   /* ── Supabase Realtime subscriptions (replaces polling) ── */
-  useEffect(() => {
-    const channel = supabase
-      .channel("emergency-realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "emergency_state" },
-        () => {
-          queryClient.invalidateQueries({ queryKey: EMERGENCY_QUERY_KEY });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "emergency_stuck_reports" },
-        () => {
-          queryClient.invalidateQueries({ queryKey: STUCK_REPORTS_KEY });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "emergency_checkins" },
-        () => {
-          queryClient.invalidateQueries({ queryKey: CHECKINS_KEY });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
-
   const responseSummary = useMemo(() => {
     const list = unifiedResponses;
     const acknowledged = list.filter((r) => r.acknowledged);
@@ -363,19 +338,28 @@ export default function EmergencySOS() {
 
   /* ── Activate emergency (write to DB) ── */
   const activateEmergency = useCallback(async () => {
+    if (!emergencyState) return;
     setIsActivating(true);
     setShowConfirmDialog(false);
 
-    // 1. Set emergency_state to active via RPC mapped function to bypass RLS securely
-    await supabase.rpc('toggle_emergency', { activate: true, email: 'admin@navmedemo.com' });
+    await updateRows(
+      "emergency_state",
+      {
+        is_active: true,
+        activated_at: new Date().toISOString(),
+        activated_by: "dashboard-admin",
+      },
+      [{ column: "id", op: "eq", value: emergencyState.id }],
+    );
 
     // 2. Block all fire exit zones
     const fireZoneIds = fireExitZones.map((z) => z.zone_id);
     if (fireZoneIds.length > 0) {
-      await supabase
-        .from("access_control_zones")
-        .update({ is_blocked: true })
-        .in("zone_id", fireZoneIds);
+      await updateRows(
+        "access_control_zones",
+        { is_blocked: true },
+        [{ column: "zone_id", op: "in", value: fireZoneIds }],
+      );
     }
 
     // 3. Invalidate all related queries
@@ -385,29 +369,34 @@ export default function EmergencySOS() {
     queryClient.invalidateQueries({ queryKey: ["access-control-zones"] });
 
     setIsActivating(false);
-  }, [fireExitZones, queryClient]);
+  }, [emergencyState, fireExitZones, queryClient]);
 
   /* ── Deactivate emergency (write to DB) ── */
   const deactivateEmergency = useCallback(async () => {
     setShowDeactivateDialog(false);
 
     try {
-      // 1. Set emergency_state to inactive via RPC
-      const { error: rpcError } = await supabase.rpc('toggle_emergency', { activate: false, email: 'admin@navmedemo.com' });
-      if (rpcError) {
-        console.error("Stand down RPC failed:", rpcError);
-        alert("Failed to stand down: " + rpcError.message);
-        return;
+      if (!emergencyState) {
+        throw new Error("Emergency state is unavailable.");
       }
+      await updateRows(
+        "emergency_state",
+        {
+          is_active: false,
+          activated_at: null,
+          activated_by: null,
+        },
+        [{ column: "id", op: "eq", value: emergencyState.id }],
+      );
 
       // 2. Unblock all fire exit zones
       const fireZoneIds = fireExitZones.map((z) => z.zone_id);
       if (fireZoneIds.length > 0) {
-        const { error: updateErr } = await supabase
-          .from("access_control_zones")
-          .update({ is_blocked: false })
-          .in("zone_id", fireZoneIds);
-        if (updateErr) console.error("Failed to unblock zones:", updateErr);
+        await updateRows(
+          "access_control_zones",
+          { is_blocked: false },
+          [{ column: "zone_id", op: "in", value: fireZoneIds }],
+        );
       }
 
       // 3. Invalidate
@@ -419,9 +408,9 @@ export default function EmergencySOS() {
       queryClient.invalidateQueries({ queryKey: ["access-control-zones"] });
     } catch (err) {
       console.error("Stand down error:", err);
-      alert("Stand down failed. Check the console for details.");
+      alert(err instanceof Error ? err.message : "Stand down failed. Check the console for details.");
     }
-  }, [fireExitZones, queryClient]);
+  }, [emergencyState, fireExitZones, queryClient]);
 
   /* ── Hold-to-activate logic ── */
   const startHold = useCallback(() => {

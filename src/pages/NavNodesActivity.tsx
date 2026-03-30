@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { LuRefreshCw as RefreshCw, LuLoaderCircle as Loader2, LuTrendingUp as TrendingUp, LuTrophy as Trophy, LuUsers as Users, LuChartColumn as BarChart3 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
+import { selectRows } from "@/lib/api-client";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatCard } from "@/components/dashboard/StatCard";
 
@@ -50,25 +50,49 @@ const CustomXAxisTick = ({ x, y, payload }: { x?: number; y?: number; payload?: 
 };
 
 export default function NavNodesActivity() {
-  const { data: rawNodes, isLoading, refetch } = useQuery({
+  const { data: chartSource, isLoading, refetch } = useQuery({
     queryKey: ["user-activity"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("ar_ropin_navnode")
-        .select("user_id, ar_ropin_users(full_name, email)");
-      if (error) throw error;
-      return data as { user_id: string | null; ar_ropin_users: { full_name: string | null; email: string | null } | null }[];
+      const [nodes, users] = await Promise.all([
+        selectRows<{ user_id: string | null }>({
+          table: "ar_ropin_navnode",
+          select: "user_id",
+        }),
+        selectRows<{ id: string; user_name: string | null; email: string | null }>({
+          table: "ar_ropin_users",
+          select: "id, user_name, email",
+        }),
+      ]);
+
+      const usersById = new Map(
+        users.map((user) => [
+          user.id,
+          {
+            name: user.user_name || user.email || "Unknown user",
+            email: user.email || "—",
+          },
+        ]),
+      );
+
+      return nodes.map((node) => {
+        const profile = node.user_id ? usersById.get(node.user_id) : null;
+        return {
+          userId: node.user_id,
+          userName: profile?.name ?? (node.user_id ? `User ${node.user_id.slice(0, 8)}` : null),
+          email: profile?.email ?? "—",
+        };
+      });
     },
   });
 
   const chartData = useMemo(() => {
-    if (!rawNodes) return [];
+    if (!chartSource) return [];
     const grouped: Record<string, { count: number; email: string }> = {};
-    rawNodes.forEach((node) => {
-      const name = node.ar_ropin_users?.full_name || node.ar_ropin_users?.email || null;
+    chartSource.forEach((node) => {
+      const name = node.userName;
       if (!name) return; // skip rows with no named user
       if (!grouped[name]) {
-        grouped[name] = { count: 0, email: node.ar_ropin_users?.email || "—" };
+        grouped[name] = { count: 0, email: node.email || "—" };
       }
       grouped[name].count++;
     });
@@ -79,9 +103,9 @@ export default function NavNodesActivity() {
         created_by: email,
       }))
       .sort((a, b) => b.points - a.points);
-  }, [rawNodes]);
+  }, [chartSource]);
 
-  const totalPoints = rawNodes?.length ?? 0;
+  const totalPoints = chartSource?.length ?? 0;
   const totalUsers = chartData.length;
   const topScore = chartData[0]?.points ?? 0;
   const chartWidth = Math.max(600, chartData.length * 110);

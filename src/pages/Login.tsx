@@ -11,7 +11,7 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function Login() {
-  const { login, skipLogin, isAuthenticated } = useAuth();
+  const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -86,7 +86,7 @@ export default function Login() {
                 type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="demo@navme"
+                placeholder="admin@company.com"
                 required
                 autoComplete="email"
                 className="glass-input w-full pl-11 focus:shadow-[0_0_25px_hsla(221,83%,53%,0.1)]"

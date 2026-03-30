@@ -24,7 +24,7 @@ import {
   LuSearch as Search,
   LuBox as Box,
 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
+import { countRows } from "@/lib/api-client";
 import { tableOrder, tableConfigs } from "@/lib/tableConfig";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatCard } from "@/components/dashboard/StatCard";
@@ -62,10 +62,11 @@ const iconMap: Record<string, typeof DoorOpen> = {
 async function fetchCounts() {
   const results = await Promise.all(
     tableOrder.map(async (key) => {
-      const { count, error } = await supabase
-        .from(tableConfigs[key].tableName)
-        .select("*", { count: "exact", head: true });
-      return { key, count: error ? 0 : (count ?? 0) };
+      const count = await countRows({
+        table: tableConfigs[key].tableName,
+        select: "*",
+      });
+      return { key, count };
     })
   );
   const map: Record<string, number> = {};
@@ -74,10 +75,10 @@ async function fetchCounts() {
 }
 
 async function fetchNavNodesCount() {
-  const { count, error } = await supabase
-    .from("ar_ropin_navnode")
-    .select("*", { count: "exact", head: true });
-  return error ? 0 : (count ?? 0);
+  return countRows({
+    table: "ar_ropin_navnode",
+    select: "*",
+  });
 }
 
 // ─── Shared chart styles ────────────────────────────────

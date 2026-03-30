@@ -8,6 +8,7 @@ import {
   LuEllipsis as MoreHorizontal,
   LuLogOut as LogOut,
   LuUser as UserIcon,
+  LuUserCog as UserCog,
   LuSiren as Siren,
 } from "react-icons/lu";
 import { useState } from "react";
@@ -31,6 +32,10 @@ const configItems = [
   { label: "Users", path: "/users" },
 ];
 
+const superAdminPrimaryItems = [
+  { icon: UserCog, label: "Tenants", path: "/admin-management" },
+];
+
 function getInitials(name: string) {
   return name
     .split(" ")
@@ -43,11 +48,12 @@ function getInitials(name: string) {
 export default function MobileBottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, isSuperAdmin } = useAuth();
   const [showConfig, setShowConfig] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
 
-  const isConfigActive = configItems.some((c) => location.pathname === c.path);
+  const navItems = isSuperAdmin ? superAdminPrimaryItems : primaryItems;
+  const isConfigActive = !isSuperAdmin && configItems.some((c) => location.pathname === c.path);
 
   function handleLogout() {
     setShowProfile(false);
@@ -58,7 +64,7 @@ export default function MobileBottomNav() {
   return (
     <>
       {/* Configuration overlay */}
-      {showConfig && (
+      {!isSuperAdmin && showConfig && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -68,7 +74,7 @@ export default function MobileBottomNav() {
         />
       )}
 
-      {showConfig && (
+      {!isSuperAdmin && showConfig && (
         <motion.div
           initial={{ opacity: 0, y: 60 }}
           animate={{ opacity: 1, y: 0 }}
@@ -159,7 +165,7 @@ export default function MobileBottomNav() {
       {/* Bottom bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 md:hidden glass-sidebar border-t border-border/20 safe-area-bottom">
         <div className="flex items-center justify-around px-1 h-16">
-          {primaryItems.map((item) => {
+          {navItems.map((item) => {
             const isConfig = item.path === "__config__";
             const isActive = isConfig
               ? isConfigActive || showConfig

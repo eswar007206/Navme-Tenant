@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "vite",
+    "dev": "node server.js --dev",
+    "dev:vite": "vite",
     "build": "vite build",
     "maps:mega": "node scripts/generate-mega-floor-svgs.mjs",
     "maps:pdf": "node scripts/rasterize-pdf-floors.mjs",

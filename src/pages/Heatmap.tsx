@@ -15,7 +15,7 @@ import {
   LuMaximize as Maximize,
   LuMinimize as Minimize,
 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
+import { selectRows, updateRows } from "@/lib/api-client";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { FloorBlueprint } from "@/components/floor-plan/FloorBlueprint";
 import type { PersonOnMap, NavPathPoint } from "@/components/floor-plan/FloorBlueprint";
@@ -118,12 +118,12 @@ const TABS: { key: TabKey; label: string; icon: typeof Layers; table: string; na
 /* ── Fetch helpers ─────────────────────────────────────── */
 
 async function fetchItems(table: string): Promise<AreaItem[]> {
-  const { data, error } = await supabase
-    .from(table)
-    .select("*")
-    .order("id", { ascending: true });
-  if (error) throw error;
-  return data ?? [];
+  return selectRows<AreaItem>({
+    table,
+    select: "*",
+    orderBy: "id",
+    ascending: true,
+  });
 }
 
 /* ── Animation variants ────────────────────────────────── */
@@ -167,12 +167,13 @@ export default function Heatmap() {
   const { data: dbZones } = useQuery({
     queryKey: ["heatmap-zones"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("access_control_zones")
-        .select("*")
-        .order("zone_id");
-      if (error) throw error;
-      return (data ?? []).map((r: Record<string, unknown>) => ({
+      const data = await selectRows<Record<string, unknown>>({
+        table: "access_control_zones",
+        select: "*",
+        orderBy: "zone_id",
+        ascending: true,
+      });
+      return data.map((r: Record<string, unknown>) => ({
         zone_id: r.zone_id as string,
         label: r.label as string,
         x: Number(r.x),
@@ -226,10 +227,11 @@ export default function Heatmap() {
   const handleZoneToggle = useCallback(async (zoneId: string) => {
     const zone = allZones.find((z) => z.zone_id === zoneId);
     if (!zone) return;
-    await supabase
-      .from("access_control_zones")
-      .update({ is_blocked: !zone.is_blocked })
-      .eq("zone_id", zoneId);
+    await updateRows(
+      "access_control_zones",
+      { is_blocked: !zone.is_blocked },
+      [{ column: "zone_id", op: "eq", value: zoneId }],
+    );
     queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
     queryClient.invalidateQueries({ queryKey: ["access-control"] });
   }, [allZones, queryClient]);
@@ -238,10 +240,11 @@ export default function Heatmap() {
     // Only unblock zones on the active floor
     const floorZoneIds = mapZones.map((z) => z.zone_id);
     if (floorZoneIds.length === 0) return;
-    await supabase
-      .from("access_control_zones")
-      .update({ is_blocked: false })
-      .in("zone_id", floorZoneIds);
+    await updateRows(
+      "access_control_zones",
+      { is_blocked: false },
+      [{ column: "zone_id", op: "in", value: floorZoneIds }],
+    );
     queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
     queryClient.invalidateQueries({ queryKey: ["access-control"] });
   }, [mapZones, queryClient]);
@@ -275,19 +278,19 @@ export default function Heatmap() {
       setTogglingId(id);
       setLocalStatus((s) => ({ ...s, [id]: next }));
 
-      const { error } = await supabase
-        .from(currentTab.table)
-        .update({ is_active: next })
-        .eq("id", id);
-
       setTogglingId(null);
       const toastId = Date.now();
-      if (error) {
-        setLocalStatus((s) => ({ ...s, [id]: prev }));
-        setToasts((prev) => [...prev, { id: toastId, name, error: true }]);
-      } else {
+      try {
+        await updateRows(
+          currentTab.table,
+          { is_active: next },
+          [{ column: "id", op: "eq", value: id }],
+        );
         setToasts((prev) => [...prev, { id: toastId, name, blocked: !next }]);
         queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
+      } catch {
+        setLocalStatus((s) => ({ ...s, [id]: prev }));
+        setToasts((prev) => [...prev, { id: toastId, name, error: true }]);
       }
       setTimeout(() => setToasts((t) => t.filter((x) => x.id !== toastId)), 3000);
     },

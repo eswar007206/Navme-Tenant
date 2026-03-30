@@ -96,14 +96,13 @@ export default function DashboardSidebar() {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout, isSuperAdmin, updateAvatar } = useAuth();
+  const { user, logout, isSuperAdmin, updateAvatar, activeOrganizationName } = useAuth();
 
   const navStructure = useMemo(() => {
-    const items = [...baseNavStructure];
     if (isSuperAdmin) {
-      items.push({ icon: UserCog, label: "Admin Management", path: "/admin-management" });
+      return [{ icon: UserCog, label: "Tenant Management", path: "/admin-management" }];
     }
-    return items;
+    return [...baseNavStructure];
   }, [isSuperAdmin]);
 
   useEffect(() => {
@@ -187,8 +186,11 @@ export default function DashboardSidebar() {
                       {user.display_name}
                     </div>
                     <div className="text-[10px] text-white/40 font-medium">
-                      {user.role === "super_admin" ? "Super Admin" : "Admin"}
+                      {user.role === "super_admin" ? "Super Admin" : "Organization Admin"}
                     </div>
+                    {activeOrganizationName && (
+                      <div className="text-[10px] text-white/50 truncate">{activeOrganizationName}</div>
+                    )}
                   </button>
                 </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
@@ -196,6 +198,9 @@ export default function DashboardSidebar() {
                 <div className="flex flex-col space-y-1">
                   <p className="text-sm font-semibold">{user.display_name}</p>
                   <p className="text-xs text-muted-foreground">{user.email}</p>
+                  {activeOrganizationName && (
+                    <p className="text-xs text-muted-foreground">Tenant: {activeOrganizationName}</p>
+                  )}
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
@@ -203,7 +208,7 @@ export default function DashboardSidebar() {
                 <>
                   <DropdownMenuItem onClick={() => navigate("/admin-management")}>
                     <UserCog className="w-4 h-4 mr-2" />
-                    Admin Management
+                    Tenant Management
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>
@@ -221,7 +226,7 @@ export default function DashboardSidebar() {
             <div className="w-10 h-10 rounded-xl shrink-0 overflow-hidden ring-2 ring-white/10">
               <img src="/favicon.ico" alt="NavMe Demo" className="w-full h-full object-contain" />
             </div>
-            {!isCollapsed && (
+            {!collapsed && (
               <span className={`text-lg font-bold tracking-tight ${textNorm}`}>NavMe Demo</span>
             )}
           </div>

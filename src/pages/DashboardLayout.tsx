@@ -4,9 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { LuSiren as Siren, LuOctagonX as OctagonX } from "react-icons/lu";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import MobileBottomNav from "@/components/dashboard/MobileBottomNav";
-import { supabase } from "@/lib/supabase";
-
-const EMERGENCY_ROW_ID = "00000000-0000-0000-0000-000000000001";
+import { selectSingleRow } from "@/lib/api-client";
 
 export default function DashboardLayout() {
   const navigate = useNavigate();
@@ -15,13 +13,12 @@ export default function DashboardLayout() {
   const { data: emergencyState } = useQuery({
     queryKey: ["emergency-state"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("emergency_state")
-        .select("*")
-        .eq("id", EMERGENCY_ROW_ID)
-        .single();
-      if (error) return null;
-      return data as { is_active: boolean; activated_at: string | null };
+      return selectSingleRow<{ is_active: boolean; activated_at: string | null }>({
+        table: "emergency_state",
+        select: "is_active, activated_at",
+        orderBy: "created_at",
+        ascending: true,
+      });
     },
     refetchInterval: 3000,
   });

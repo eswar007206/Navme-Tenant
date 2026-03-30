@@ -6,9 +6,14 @@ import { LuLoaderCircle as Loader2 } from "react-icons/lu";
 interface ProtectedRouteProps {
   children: React.ReactNode;
   requireSuperAdmin?: boolean;
+  blockSuperAdmin?: boolean;
 }
 
-export function ProtectedRoute({ children, requireSuperAdmin = false }: ProtectedRouteProps) {
+export function ProtectedRoute({
+  children,
+  requireSuperAdmin = false,
+  blockSuperAdmin = false,
+}: ProtectedRouteProps) {
   const { isAuthenticated, isLoading, isSuperAdmin } = useAuth();
   const location = useLocation();
 
@@ -39,6 +44,10 @@ export function ProtectedRoute({ children, requireSuperAdmin = false }: Protecte
 
   if (requireSuperAdmin && !isSuperAdmin) {
     return <Navigate to="/" replace />;
+  }
+
+  if (blockSuperAdmin && isSuperAdmin) {
+    return <Navigate to="/admin-management" replace />;
   }
 
   return <>{children}</>;

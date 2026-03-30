@@ -7,7 +7,7 @@ import {
   LuCheck as Check,
   LuLoaderCircle as Loader2,
 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
+import { selectRows, updateRows } from "@/lib/api-client";
 
 interface Room {
   room_id: string;
@@ -42,12 +42,12 @@ const cardItem = {
 };
 
 async function fetchRooms(): Promise<Room[]> {
-  const { data, error } = await supabase
-    .from("ar_rooms")
-    .select("room_id, room_name, floor_no, is_active")
-    .order("room_id", { ascending: true });
-  if (error) throw error;
-  return data ?? [];
+  return selectRows<Room>({
+    table: "ar_rooms",
+    select: "room_id, room_name, floor_no, is_active",
+    orderBy: "room_id",
+    ascending: true,
+  });
 }
 
 export default function BlockShops() {
@@ -72,10 +72,11 @@ export default function BlockShops() {
     const next = !status[roomId];
     setStatus((prev) => ({ ...prev, [roomId]: next }));
 
-    await supabase
-      .from("ar_rooms")
-      .update({ is_active: next ? "Y" : "N" })
-      .eq("room_id", roomId);
+    await updateRows(
+      "ar_rooms",
+      { is_active: next ? "Y" : "N" },
+      [{ column: "room_id", op: "eq", value: roomId }],
+    );
 
     const toastId = Date.now();
     setToasts((prev) => [...prev, { id: toastId, roomName: name, active: next }]);
