@@ -47,6 +47,10 @@ interface LoginResponse {
   user: AdminUser;
 }
 
+interface ListAdminsOptions {
+  scope?: "all" | "active";
+}
+
 export interface StoredAuthSession extends AuthSession {
   token: string;
 }
@@ -142,8 +146,14 @@ export async function createOrganization(input: CreateOrganizationInput): Promis
   return payload.organization;
 }
 
-export async function listAdmins(): Promise<AdminUser[]> {
-  const payload = await apiRequest<{ admins: AdminUser[] }>("/api/admins");
+export async function listAdmins(options?: ListAdminsOptions): Promise<AdminUser[]> {
+  const searchParams = new URLSearchParams();
+  if (options?.scope) {
+    searchParams.set("scope", options.scope);
+  }
+
+  const path = searchParams.size > 0 ? `/api/admins?${searchParams.toString()}` : "/api/admins";
+  const payload = await apiRequest<{ admins: AdminUser[] }>(path);
   return payload.admins;
 }
 

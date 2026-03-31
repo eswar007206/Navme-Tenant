@@ -65,7 +65,7 @@ app.use((request, response, next) => {
     response.setHeader("Vary", "Origin");
     response.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, X-Navme-Api-Key, X-Active-Organization-Id",
+      "Content-Type, Authorization, X-Navme-Api-Key, X-Active-Organization-Id, X-File-Path, X-Upsert",
     );
     response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   }
@@ -428,17 +428,22 @@ app.post("/api/organizations", requireAuth, requireSuperAdmin, async (request, r
 
 app.get("/api/admins", requireAuth, requireSuperAdmin, async (request, response) => {
   try {
-    const organizationId = await resolveActiveOrganizationId(request);
-    if (!organizationId) {
-      response.json({ admins: [] });
-      return;
-    }
-
-    const { data, error } = await supabaseAdmin
+    const scope = String(request.query?.scope || "all").trim().toLowerCase();
+    let query = supabaseAdmin
       .from("dashboard_admins_safe")
       .select("*")
-      .eq("organization_id", organizationId)
       .order("created_at", { ascending: true });
+
+    if (scope === "active") {
+      const organizationId = await resolveActiveOrganizationId(request);
+      if (!organizationId) {
+        response.json({ admins: [] });
+        return;
+      }
+      query = query.eq("organization_id", organizationId);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       response.status(400).json({ error: error.message });
@@ -842,6 +847,59 @@ async function handleOrganizationApiMutation(request, response) {
 
 app.post("/api/external/mutate/:table", handleOrganizationApiMutation);
 app.post("/api/ingest/:table", handleOrganizationApiMutation);
+app.post(
+  "/api/external/storage/:bucket",
+  express.raw({ type: "*/*", limit: "15mb" }),
+  async (request, response) => {
+    if (!requireSupabase(response)) return;
+
+    const bucket = request.params.bucket;
+    const rawPath = String(request.headers["x-file-path"] || "").trim().replace(/^\/+/, "");
+    const upsert = String(request.headers["x-upsert"] || "false").toLowerCase() === "true";
+    const contentType = String(request.headers["content-type"] || "application/octet-stream");
+
+    if (!bucket || !rawPath) {
+      response.status(400).json({ error: "Provide a bucket and x-file-path header." });
+      return;
+    }
+
+    if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+      response.status(400).json({ error: "Upload body is empty." });
+      return;
+    }
+
+    try {
+      const apiKey = await resolveOrganizationApiKey(request);
+      const scopedPath = `${apiKey.organization_id}/${rawPath}`;
+
+      const { error } = await supabaseAdmin.storage
+        .from(bucket)
+        .upload(scopedPath, request.body, {
+          contentType,
+          upsert,
+        });
+
+      if (error) {
+        response.status(400).json({ error: error.message });
+        return;
+      }
+
+      const { data: publicUrlData } = supabaseAdmin.storage.from(bucket).getPublicUrl(scopedPath);
+      await markOrganizationApiKeyUsed(apiKey.id);
+
+      response.json({
+        data: {
+          path: scopedPath,
+          publicUrl: publicUrlData.publicUrl,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to upload file.";
+      const status = message === "Provide x-navme-api-key." || message === "Invalid API key." ? 401 : 400;
+      response.status(status).json({ error: message });
+    }
+  },
+);
 
 async function start() {
   if (isDev) {

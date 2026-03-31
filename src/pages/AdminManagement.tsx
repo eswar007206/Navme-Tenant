@@ -78,9 +78,8 @@ export default function AdminManagement() {
   });
 
   const { data: admins = [], isLoading: adminsLoading } = useQuery({
-    queryKey: ["admin-list", activeOrganizationId],
-    queryFn: listAdmins,
-    enabled: !!activeOrganizationId,
+    queryKey: ["admin-list", "all"],
+    queryFn: () => listAdmins({ scope: "all" }),
   });
 
   const { data: apiKeys = [], isLoading: apiKeysLoading } = useQuery({
@@ -274,10 +273,10 @@ export default function AdminManagement() {
           <div className="flex items-center justify-between gap-3 px-4 sm:px-5 py-3 border-b border-border bg-muted/30">
             <div>
               <h2 className="font-display font-semibold text-section-title text-foreground">
-                Organization Admins
+                All Logins
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {activeOrganizationName ? `Logins for ${activeOrganizationName}` : "Select an organization first"}
+                Super admin can see every dashboard login across all tenants. The selected organization still controls new logins and API keys.
               </p>
             </div>
             <button
@@ -309,6 +308,9 @@ export default function AdminManagement() {
                       <div className="text-[11px] text-muted-foreground mt-1">
                         {admin.role === "super_admin" ? "Super Admin" : "Organization Admin"}
                       </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {admin.organization_name ?? "Global access"}
+                      </div>
                     </div>
                     {!isYou && (
                       <button
@@ -323,7 +325,7 @@ export default function AdminManagement() {
               })}
               {admins.length === 0 && (
                 <div className="p-8 text-center text-sm text-muted-foreground">
-                  No organization logins yet.
+                  No dashboard logins yet.
                 </div>
               )}
             </div>

@@ -14,7 +14,6 @@ import {
   LuRefreshCw as RefreshCw,
   LuConstruction as Construction,
 } from "react-icons/lu";
-import { supabase } from "@/lib/supabase";
 import { format } from "date-fns";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { FloorBlueprint } from "@/components/floor-plan/FloorBlueprint";
@@ -23,6 +22,7 @@ import { BUILDING_OUTLINE, BUILDING_BOUNDS, getBuildingOutlineBoundingBox } from
 import { FLOOR_MAP_PNG, getFloorPlanPixels } from "@/data/floorPlanDimensions";
 import { AR_BOUNDS } from "@/data/arCoordinates";
 import { fetchFloorNavPathsRows } from "@/lib/floorNavPaths";
+import { selectRows, updateRows } from "@/lib/api-client";
 
 const FloorBlueprint3D = lazy(() => import("@/components/floor-plan/FloorBlueprint3D"));
 
@@ -133,12 +133,12 @@ const cardItem = {
 };
 
 async function fetchItems(table: string): Promise<AreaItem[]> {
-  const { data, error } = await supabase
-    .from(table)
-    .select("*")
-    .order("id", { ascending: true });
-  if (error) throw error;
-  return data ?? [];
+  return selectRows<AreaItem>({
+    table,
+    select: "*",
+    orderBy: "id",
+    ascending: true,
+  });
 }
 
 export default function AccessControl() {
@@ -179,12 +179,13 @@ export default function AccessControl() {
   const { data: dbZones } = useQuery({
     queryKey: ["access-control-zones"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("access_control_zones")
-        .select("*")
-        .order("zone_id");
-      if (error) throw error;
-      return (data ?? []).map((r: Record<string, unknown>) => ({
+      const data = await selectRows<Record<string, unknown>>({
+        table: "access_control_zones",
+        select: "*",
+        orderBy: "zone_id",
+        ascending: true,
+      });
+      return data.map((r: Record<string, unknown>) => ({
         zone_id: r.zone_id as string,
         label: r.label as string,
         x: Number(r.x),
@@ -231,21 +232,21 @@ export default function AccessControl() {
       setTogglingId(id);
       setLocalStatus((s) => ({ ...s, [id]: next }));
 
-      const { error } = await supabase
-        .from(currentTab.table)
-        .update({ is_active: next })
-        .eq("id", id);
-
       setTogglingId(null);
       const toastId = Date.now();
-      if (error) {
-        setLocalStatus((s) => ({ ...s, [id]: prev }));
-        setToasts((prev) => [...prev, { id: toastId, name, error: true }]);
-      } else {
+      try {
+        await updateRows(
+          currentTab.table,
+          { is_active: next },
+          [{ column: "id", op: "eq", value: id }],
+        );
         setLastUpdated(new Date());
         setToasts((prev) => [...prev, { id: toastId, name, blocked: !next }]);
         // Sync heatmap zones (reverse trigger updates access_control_zones)
         queryClient.invalidateQueries({ queryKey: ["heatmap-zones"] });
+      } catch {
+        setLocalStatus((s) => ({ ...s, [id]: prev }));
+        setToasts((prev) => [...prev, { id: toastId, name, error: true }]);
       }
       setTimeout(() => setToasts((t) => t.filter((x) => x.id !== toastId)), 3000);
     },
