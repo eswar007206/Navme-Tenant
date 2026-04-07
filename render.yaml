@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: navme-tenant-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: APP_SESSION_SECRET
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
